@@ -171,6 +171,7 @@ Repository: localair:latest
 Network Type: Host
 Appdata: /mnt/user/appdata/localair -> /data
 Web UI Port: 8787
+Timezone: your local timezone, e.g. Australia/Perth
 ```
 
 Apply the template, then open:
@@ -192,6 +193,7 @@ docker run -d \
   --network host \
   -e LOCALAIR_DATA=/data \
   -e LOCALAIR_PORT=8787 \
+  -e TZ=Australia/Perth \
   -v /mnt/user/appdata/localair:/data \
   localair:latest
 ```
@@ -218,16 +220,38 @@ git pull
 docker build -t localair:latest .
 ```
 
-Then restart the container from the Unraid UI.
+If the container already exists, restarting may not use the newly built image.
+Docker containers keep using the image ID they were created from. To guarantee
+the new image is used, remove and recreate the container from the Unraid
+template:
+
+```sh
+docker stop LocalAIR || docker stop localair
+docker rm LocalAIR || docker rm localair
+```
+
+Then use:
+
+```text
+Docker → Add Container → Template dropdown → LocalAIR → Apply
+```
 
 If the container was created manually with `docker run`:
 
 ```sh
-docker restart localair
-```
+docker stop localair
+docker rm localair
 
-If the container was created from the Unraid template, use the Docker tab
-restart action.
+docker run -d \
+  --name localair \
+  --restart unless-stopped \
+  --network host \
+  -e LOCALAIR_DATA=/data \
+  -e LOCALAIR_PORT=8787 \
+  -e TZ=Australia/Perth \
+  -v /mnt/user/appdata/localair:/data \
+  localair:latest
+```
 
 ## Web Settings page
 
@@ -253,6 +277,8 @@ Important:
 - If the local-key field is left blank, LocalAIR keeps the existing saved key.
 - Changing the web port may require restarting the container.
 - The app stores changes back to `/data/config.toml`.
+- Timezone is a Docker/Unraid environment variable named `TZ`, not a web setting.
+  Set it in the Unraid template. Example: `Australia/Perth`.
 
 ## Configuration file
 

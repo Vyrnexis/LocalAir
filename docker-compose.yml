@@ -7,5 +7,6 @@ services:
     environment:
       LOCALAIR_DATA: /data
       LOCALAIR_PORT: 8787
+      TZ: Etc/UTC
     volumes:
       - /mnt/user/appdata/localair:/data

@@ -41,6 +41,7 @@ Recommended defaults:
 Network: host
 Appdata: /mnt/user/appdata/localair -> /data
 Web UI Port: 8787
+Timezone: your local timezone, e.g. Australia/Perth
 Data Directory: /data
 Config File: /data/config.toml
 Database File: /data/localair.db

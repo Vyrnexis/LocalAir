@@ -87,5 +87,20 @@ docker build -t vyrnexis/localair:latest .
 docker push vyrnexis/localair:latest
 ```
 
-If Unraid Community Apps does not accept the SVG icon, export `localair.svg` to
-`localair.png` and update the `<Icon>` URL.
+The templates use `localair.png` for the Docker page icon because Unraid is more
+reliable with PNG icons than SVG icons.
+
+The Unraid Docker page may show `Version: not available` when using
+`localair-local.xml`. That is expected because the template uses a locally built
+image:
+
+```text
+localair:latest
+```
+
+Unraid can only check available updates when the repository points to a public
+registry image such as:
+
+```text
+vyrnexis/localair:latest
+```

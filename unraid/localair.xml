@@ -26,7 +26,7 @@ This container uses host networking so it can reliably talk to Tuya LAN devices.
   <Category>HomeAutomation: Tools:</Category>
   <WebUI>http://[IP]:[PORT:8787]/</WebUI>
   <TemplateURL>https://codeberg.org/Vyrnexis/localAIR/raw/branch/main/unraid/localair.xml</TemplateURL>
-  <Icon>https://codeberg.org/Vyrnexis/localAIR/raw/branch/main/unraid/localair.svg</Icon>
+  <Icon>https://codeberg.org/Vyrnexis/localAIR/raw/branch/main/unraid/localair.png</Icon>
   <ExtraParams/>
   <PostArgs/>
   <CPUset/>

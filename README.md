@@ -180,6 +180,10 @@ Apply the template, then open:
 http://YOUR_UNRAID_IP:8787
 ```
 
+When using the local template, Unraid may show `Version: not available` in the
+Docker tab. That is normal for locally built images. Version/update checks only
+work once the template points at a public registry image.
+
 ## Manual Docker run
 
 If you do not want to use the Unraid template yet:

@@ -139,6 +139,12 @@ class StorageTests(unittest.TestCase):
                 datetime.fromisoformat(points[0]["timestamp"]).tzinfo
             )
 
+    def test_removed_six_hour_range_falls_back_to_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalAirStore(Path(directory) / "localair.db", 31)
+
+            self.assertEqual(store.history("6h"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

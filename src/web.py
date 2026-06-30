@@ -435,11 +435,10 @@ DASHBOARD_HTML = """
       <div class="chart-tools">
         <h2>History</h2>
         <select id="range" onchange="loadHistory()">
-          <option value="1h" selected>Last hour</option>
-          <option value="6h">Last 6 hours</option>
-          <option value="24h">Last 24 hours</option>
-          <option value="7d">Last 7 days</option>
-          <option value="31d">Last 31 days</option>
+          <option value="1h" selected>Hourly</option>
+          <option value="24h">Daily</option>
+          <option value="7d">Weekly</option>
+          <option value="31d">Monthly</option>
         </select>
       </div>
       <canvas id="chart" width="1100" height="270"></canvas>
@@ -517,54 +516,153 @@ async function syncPower() {
 async function loadHistory() {
   const range = document.getElementById("range").value;
   const data = await fetch(`/api/history?range=${range}`).then(r => r.json());
-  drawChart(data.points);
+  drawChart(data.points, range);
 }
 
-function drawChart(points) {
+function drawChart(points, range) {
   const canvas = document.getElementById("chart");
   const ctx = canvas.getContext("2d");
   const w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
-  const left = 44, right = 18, top = 18, bottom = 30;
+  const left = 58, right = 58, top = 18, bottom = 42;
   const gw = w - left - right, gh = h - top - bottom;
-  ctx.strokeStyle = "#e4ebf2"; ctx.lineWidth = 1;
-  for (let i = 0; i < 5; i++) {
-    const y = top + gh * i / 4;
-    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + gw, y); ctx.stroke();
-  }
+
   if (points.length === 0) {
     ctx.fillStyle = "#667085"; ctx.font = "15px sans-serif";
     ctx.fillText("History graph appears after the first stored reading", left + 245, top + gh / 2);
     return;
   }
+
   const temps = points.map(p => p.temperature_c);
-  let minT = Math.floor(Math.min(...temps) - 1), maxT = Math.ceil(Math.max(...temps) + 1);
-  if (maxT - minT < 4) { const mid = (maxT + minT) / 2; minT = mid - 2; maxT = mid + 2; }
+  const humidity = points.map(p => p.humidity_percent);
+  const tempScale = axisScale(Math.min(...temps), Math.max(...temps), 1, "temperature");
+  const humidityScale = axisScale(Math.min(...humidity), Math.max(...humidity), 5, "humidity");
+  const dates = points.map(p => new Date(p.timestamp));
+  const startTime = dates[0].getTime();
+  const endTime = dates[dates.length - 1].getTime();
+  const timeSpan = Math.max(1, endTime - startTime);
+
+  drawAxes();
+
   if (points.length === 1) {
-    drawPoint(points[0].temperature_c, minT, maxT, "#ef6c42", left + gw / 2);
-    drawPoint(points[0].humidity_percent, 0, 100, "#2170d1", left + gw / 2 + 12);
+    drawPoint(points[0].temperature_c, tempScale.min, tempScale.max, "#ef6c42", left + gw / 2);
+    drawPoint(points[0].humidity_percent, humidityScale.min, humidityScale.max, "#2170d1", left + gw / 2 + 12);
   } else {
-    drawLine(points.map(p => p.temperature_c), minT, maxT, "#ef6c42", false);
-    drawLine(points.map(p => p.humidity_percent), 0, 100, "#2170d1", true);
+    drawLine(points.map(p => p.temperature_c), tempScale.min, tempScale.max, "#ef6c42", false);
+    drawLine(points.map(p => p.humidity_percent), humidityScale.min, humidityScale.max, "#2170d1", true);
   }
-  ctx.fillStyle = "#667085"; ctx.font = "13px sans-serif";
-  ctx.fillText(`${maxT}°`, 5, top + 10); ctx.fillText(`${minT}°`, 5, top + gh);
-  ctx.fillText(new Date(points[0].timestamp).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}), left, h - 8);
+
+  function axisScale(minValue, maxValue, preferredStep, kind) {
+    let min = kind === "temperature"
+      ? Math.floor(minValue)
+      : Math.max(0, Math.floor(minValue / preferredStep) * preferredStep);
+    let max = kind === "temperature"
+      ? Math.ceil(maxValue)
+      : Math.min(100, Math.ceil(maxValue / preferredStep) * preferredStep);
+    if (max === min) max = min + preferredStep;
+
+    let step = preferredStep;
+    while ((max - min) / step > 8) step *= 2;
+    if (kind === "temperature" && (max - min) < 4) {
+      const mid = (min + max) / 2;
+      min = Math.floor(mid - 2);
+      max = Math.ceil(mid + 2);
+      step = 1;
+    }
+
+    const ticks = [];
+    for (let value = min; value <= max + 0.001; value += step) {
+      ticks.push(value);
+    }
+    return {min, max, ticks};
+  }
+
+  function drawAxes() {
+    ctx.font = "12px sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = 1;
+
+    for (const value of tempScale.ticks) {
+      const y = yFor(value, tempScale.min, tempScale.max);
+      ctx.strokeStyle = "#e4ebf2";
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.lineTo(left + gw, y);
+      ctx.stroke();
+      ctx.fillStyle = "#ef6c42";
+      ctx.textAlign = "right";
+      ctx.fillText(`${value}°`, left - 8, y);
+    }
+
+    for (const value of humidityScale.ticks) {
+      const y = yFor(value, humidityScale.min, humidityScale.max);
+      ctx.fillStyle = "#2170d1";
+      ctx.textAlign = "left";
+      ctx.fillText(`${value}%`, left + gw + 8, y);
+    }
+
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "#667085";
+    ctx.strokeStyle = "#edf1f5";
+    for (const tick of timeTicks(range, dates[0], dates[dates.length - 1])) {
+      const x = xFor(tick.date);
+      ctx.beginPath();
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, top + gh);
+      ctx.stroke();
+      ctx.textAlign = tick.align || "center";
+      ctx.fillText(tick.label, x, top + gh + 10);
+    }
+  }
+
+  function timeTicks(range, start, end) {
+    const ticks = [];
+    const startMs = start.getTime(), endMs = end.getTime();
+    const stepMinutes = { "1h": 15, "24h": 180, "7d": 1440, "31d": 10080 }[range] || 180;
+    const stepMs = stepMinutes * 60 * 1000;
+    const first = Math.ceil(startMs / stepMs) * stepMs;
+
+    ticks.push({date: start, label: timeLabel(start, range), align: "left"});
+    for (let ms = first; ms < endMs; ms += stepMs) {
+      if (ms <= startMs + 60000 || ms >= endMs - 60000) continue;
+      const date = new Date(ms);
+      ticks.push({date, label: timeLabel(date, range)});
+    }
+    if (endMs - startMs > 60000) {
+      ticks.push({date: end, label: timeLabel(end, range), align: "right"});
+    }
+    return ticks;
+  }
+
+  function timeLabel(date, range) {
+    if (range === "7d" || range === "31d") {
+      return date.toLocaleDateString([], {month: "short", day: "numeric"});
+    }
+    return date.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  }
+
+  function xFor(date) {
+    return left + gw * ((date.getTime() - startTime) / timeSpan);
+  }
+
+  function yFor(value, min, max) {
+    return top + gh * (1 - (value - min) / (max - min));
+  }
 
   function drawLine(values, min, max, color, dashed) {
     ctx.strokeStyle = color; ctx.lineWidth = 4; ctx.setLineDash(dashed ? [8, 6] : []);
     ctx.beginPath();
     values.forEach((value, i) => {
-      const x = left + gw * i / (values.length - 1);
-      const y = top + gh * (1 - (value - min) / (max - min));
+      const x = xFor(dates[i]);
+      const y = yFor(value, min, max);
       i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
     });
     ctx.stroke(); ctx.setLineDash([]);
   }
 
   function drawPoint(value, min, max, color, x) {
-    const y = top + gh * (1 - (value - min) / (max - min));
+    const y = yFor(value, min, max);
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(x, y, 6, 0, Math.PI * 2);

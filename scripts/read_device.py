@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read LocalAir's configured device and print one JSON result."""
+"""Read LocalAIR's configured device and print one JSON result."""
 
 from __future__ import annotations
 

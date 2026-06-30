@@ -167,18 +167,18 @@ class LocalAirStore:
                 """
                 SELECT timestamp, temperature_c, humidity_percent
                 FROM sensor_readings
-                WHERE timestamp >= ?
-                  AND temperature_c IS NOT NULL
+                WHERE temperature_c IS NOT NULL
                   AND humidity_percent IS NOT NULL
                 ORDER BY timestamp
                 """,
-                (start.isoformat(timespec="seconds"),),
             ).fetchall()
 
         buckets: dict[datetime, list[tuple[float, int]]] = {}
         for row in rows:
             timestamp = datetime.fromisoformat(row["timestamp"])
             timestamp = timestamp.astimezone()
+            if timestamp < start:
+                continue
             minute = timestamp.minute - (timestamp.minute % bucket_minutes)
             bucket = timestamp.replace(
                 minute=minute, second=0, microsecond=0

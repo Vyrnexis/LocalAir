@@ -314,7 +314,7 @@ class DeviceMonitor:
                     result = self._send_with_device(device, config, command)
                     self.on_result(result)
                     if result.ok:
-                        self.on_ir(command)
+                        self.on_ir(command, "localair")
                     self._start_learning(device)
 
                 if time.monotonic() >= next_poll:
@@ -388,7 +388,7 @@ class DeviceMonitor:
             frame = int(decoded[0]["hex"], 16)
             command = expected.get(frame)
             if command:
-                self.on_ir(command)
+                self.on_ir(command, "observed")
                 return True
             self._log_unknown(
                 f"unknown NEC hex={decoded[0]['hex']} pulses={len(pulses)}"

@@ -5,12 +5,18 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime
+from pathlib import Path
 import threading
 from typing import Any
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+)
 
 from .config import AppConfig, database_path, load_config, save_config
 from .device import (
@@ -24,21 +30,8 @@ from .device import (
 from .storage import LocalAirStore
 
 
-COMMAND_LABELS = {
-    "power": "Power",
-    "mode_heat": "Heat",
-    "mode_cool": "Cool",
-    "mode_dry": "Dry",
-    "mode_fan": "Fan",
-    "fan_low": "Low",
-    "fan_mid": "Mid",
-    "fan_high": "High",
-    "temp_down": "Temp −",
-    "temp_up": "Temp +",
-    "swing": "Swing",
-    "timer": "Timer",
-    "unit_cf": "C/F",
-}
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+ICON_PATH = STATIC_DIR / "localair.png"
 
 
 class LocalAirService:
@@ -164,8 +157,8 @@ class LocalAirService:
             self.latest_reading = reading
         self.store.add_reading(reading)
 
-    def _on_ir(self, command: str) -> None:
-        self.store.add_ir_event("observed", command)
+    def _on_ir(self, command: str, source: str) -> None:
+        self.store.add_ir_event(source, command)
         with self.lock:
             state = update_ac_state(self.config.ac_state, command)
         self._save_state(state, f"ir:{command}")
@@ -226,6 +219,16 @@ def get_service() -> LocalAirService:
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     return DASHBOARD_HTML
+
+
+@app.get("/favicon.ico")
+def favicon() -> FileResponse:
+    return FileResponse(ICON_PATH, media_type="image/png")
+
+
+@app.get("/localair.png")
+def icon() -> FileResponse:
+    return FileResponse(ICON_PATH, media_type="image/png")
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -290,6 +293,8 @@ DASHBOARD_HTML = """
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LocalAIR</title>
+  <link rel="icon" type="image/png" href="/localair.png">
+  <link rel="apple-touch-icon" href="/localair.png">
   <style>
     :root {
       --bg: #eef4f8;
@@ -460,6 +465,10 @@ function title(value) {
   return String(value).charAt(0).toUpperCase() + String(value).slice(1);
 }
 
+function sourceTitle(value) {
+  return value === "localair" ? "LocalAIR" : title(value);
+}
+
 async function refreshStatus() {
   const data = await fetch("/api/status").then(r => r.json());
   document.getElementById("status").textContent = data.reading.status;
@@ -491,7 +500,7 @@ async function refreshStatus() {
 
   document.getElementById("lastResult").textContent = data.last_result ? data.last_result.message : "";
   document.getElementById("events").innerHTML = data.events.length
-    ? data.events.map(e => `<div class="event"><span>${e.command || e.nec_hex || "Unknown"}</span><span>${new Date(e.timestamp).toLocaleTimeString()}</span></div>`).join("")
+    ? data.events.map(e => `<div class="event"><span>${sourceTitle(e.source)} · ${e.command || e.nec_hex || "Unknown"}</span><span>${new Date(e.timestamp).toLocaleTimeString()}</span></div>`).join("")
     : "No events yet.";
 }
 
@@ -580,6 +589,8 @@ SETTINGS_HTML = """
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LocalAIR Settings</title>
+  <link rel="icon" type="image/png" href="/localair.png">
+  <link rel="apple-touch-icon" href="/localair.png">
   <style>
     body {{ margin: 0; font-family: system-ui, sans-serif; background: #eef4f8; color: #172033; }}
     main {{ width: min(760px, calc(100% - 32px)); margin: 28px auto; }}

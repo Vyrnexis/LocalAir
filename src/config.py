@@ -1,4 +1,4 @@
-"""Load and save LocalAir settings without exposing credentials."""
+"""Load and save LocalAIR settings without exposing credentials."""
 
 from __future__ import annotations
 

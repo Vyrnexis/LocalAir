@@ -10,3 +10,7 @@ services:
       TZ: Etc/UTC
     volumes:
       - /mnt/user/appdata/localair:/data
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"

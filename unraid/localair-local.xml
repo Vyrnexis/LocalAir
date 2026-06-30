@@ -27,7 +27,7 @@ For normal public installs, use localair.xml after the public image exists.
   <WebUI>http://[IP]:[PORT:8787]/</WebUI>
   <TemplateURL>https://codeberg.org/Vyrnexis/localAIR/raw/branch/main/unraid/localair-local.xml</TemplateURL>
   <Icon>/mnt/user/appdata/localAIR/unraid/localair.png</Icon>
-  <ExtraParams/>
+  <ExtraParams>--log-opt max-size=10m --log-opt max-file=3</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled/>
@@ -41,4 +41,5 @@ For normal public installs, use localair.xml after the public image exists.
   <Config Name="Config File" Target="LOCALAIR_CONFIG" Default="/data/config.toml" Mode="" Description="Config file path inside the container. Usually leave as /data/config.toml." Type="Variable" Display="advanced" Required="true" Mask="false">/data/config.toml</Config>
   <Config Name="Database File" Target="LOCALAIR_DB" Default="/data/localair.db" Mode="" Description="SQLite database path inside the container. Usually leave as /data/localair.db." Type="Variable" Display="advanced" Required="true" Mask="false">/data/localair.db</Config>
   <Config Name="Host Bind" Target="LOCALAIR_HOST" Default="0.0.0.0" Mode="" Description="Address LocalAIR binds to inside host networking. Usually leave as 0.0.0.0." Type="Variable" Display="advanced" Required="true" Mask="false">0.0.0.0</Config>
+  <Config Name="Access Logs" Target="LOCALAIR_ACCESS_LOG" Default="false" Mode="" Description="Set to true only when debugging HTTP requests. Normal installs should leave this disabled to avoid noisy Docker logs." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
 </Container>

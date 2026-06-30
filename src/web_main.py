@@ -9,6 +9,10 @@ import uvicorn
 from .config import DEFAULT_SERVER_PORT, load_config
 
 
+def _enabled(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def main() -> None:
     try:
         config = load_config()
@@ -18,7 +22,12 @@ def main() -> None:
         host = os.environ.get("LOCALAIR_HOST", "0.0.0.0")
         port = int(os.environ.get("LOCALAIR_PORT", DEFAULT_SERVER_PORT))
 
-    uvicorn.run("src.web:app", host=host, port=port)
+    uvicorn.run(
+        "src.web:app",
+        host=host,
+        port=port,
+        access_log=_enabled(os.environ.get("LOCALAIR_ACCESS_LOG")),
+    )
 
 
 if __name__ == "__main__":

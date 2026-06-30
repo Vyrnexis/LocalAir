@@ -205,6 +205,8 @@ docker run -d \
   --name localair \
   --restart unless-stopped \
   --network host \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
   -e LOCALAIR_DATA=/data \
   -e LOCALAIR_PORT=8787 \
   -e TZ=Australia/Perth \
@@ -260,11 +262,25 @@ docker run -d \
   --name localair \
   --restart unless-stopped \
   --network host \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
   -e LOCALAIR_DATA=/data \
   -e LOCALAIR_PORT=8787 \
   -e TZ=Australia/Perth \
   -v /mnt/user/appdata/localair:/data \
   localair:latest
+```
+
+## Docker logs
+
+LocalAIR disables Uvicorn HTTP access logs by default. This prevents normal
+dashboard polling from constantly filling Docker logs. The Unraid templates and
+manual `docker run` examples also cap Docker logs to three 10 MB files.
+
+If you need temporary HTTP request logging for debugging, set:
+
+```text
+LOCALAIR_ACCESS_LOG=true
 ```
 
 ## Web Settings page

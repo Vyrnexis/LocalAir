@@ -169,11 +169,17 @@ class TuyaDevice:
     def _parse_status(
         data: Any, timestamp: datetime
     ) -> DeviceReading:
-        if not isinstance(data, dict) or "Error" in data:
+        if not isinstance(data, dict):
             return TuyaDevice._failed_reading(
                 timestamp,
                 ConnectionStatus.ERROR,
                 "Device returned an error. Check its settings.",
+            )
+        if "Error" in data:
+            return TuyaDevice._failed_reading(
+                timestamp,
+                ConnectionStatus.ERROR,
+                TuyaDevice._tuya_error_message(data),
             )
 
         dps = data.get("dps")
@@ -223,6 +229,18 @@ class TuyaDevice:
             connection_status=status,
             error_message=message,
         )
+
+    @staticmethod
+    def _tuya_error_message(data: dict[str, Any]) -> str:
+        detail = data.get("Error") or data.get("Err") or data.get("error")
+        if detail is None:
+            return "Device returned an error. Check its settings."
+        text = str(detail).strip()
+        if not text:
+            return "Device returned an error. Check its settings."
+        if len(text) > 160:
+            text = text[:157] + "..."
+        return f"Device returned an error: {text}"
 
 
 class DeviceMonitor:

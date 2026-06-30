@@ -64,6 +64,15 @@ class DeviceTests(unittest.TestCase):
 
         self.assertEqual(reading.connection_status, ConnectionStatus.ERROR)
 
+    def test_tuya_error_message_is_reported(self) -> None:
+        reading = TuyaDevice._parse_status(
+            {"Error": "Network Error: Unable to Connect"},
+            datetime.now().astimezone(),
+        )
+
+        self.assertEqual(reading.connection_status, ConnectionStatus.ERROR)
+        self.assertIn("Unable to Connect", reading.error_message or "")
+
     def test_unknown_ir_command_is_rejected(self) -> None:
         result = TuyaDevice().send_ir(
             AppConfig(local_key="not-a-real-key"),

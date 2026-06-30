@@ -353,19 +353,26 @@ DASHBOARD_HTML = """
     .humidity { color: var(--blue); }
     .muted { color: var(--muted); }
     .ac-state {
-      display: grid; grid-template-columns: minmax(140px, .65fr) 1fr;
+      display: grid; grid-template-columns: minmax(150px, .55fr) 1fr;
       gap: 16px; align-items: stretch;
     }
+    .power-panel { display: grid; gap: 10px; }
     .power-state {
       border-radius: 20px; padding: 18px; display: grid; place-items: center;
-      color: white; background: #7b8794; text-align: center;
+      color: white; background: #7b8794; text-align: center; cursor: default;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.22);
     }
-    .power-state.on { background: linear-gradient(135deg, var(--green), #53c98f); }
+    .power-state.on { background: linear-gradient(135deg, #2f9f70, #47bd84); }
     .power-state.off { background: linear-gradient(135deg, #475467, #98a2b3); }
     .power-state strong { display: block; font-size: 42px; line-height: 1; }
-    .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+    .power-state span { opacity: .9; }
+    .state-detail { display: grid; align-content: start; gap: 12px; }
+    .chips { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .chip { background: #f1f6fb; border: 1px solid var(--line); padding: 9px 11px; border-radius: 999px; color: #344054; font-weight: 700; }
-    .buttons { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+    .button-groups { display: grid; gap: 10px; }
+    .button-group { display: grid; gap: 6px; }
+    .button-group-title { color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+    .buttons { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; }
     button {
       border: 0; border-radius: 13px; padding: 11px 10px; font-weight: 800;
       color: #344054; background: #eef4fb; cursor: pointer;
@@ -384,10 +391,11 @@ DASHBOARD_HTML = """
     select { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; background: white; }
     canvas { width: 100%; height: 270px; display: block; }
     .events { grid-column: 1 / -1; }
-    .event { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid #eef2f6; }
+    .events h2 { margin-bottom: 8px; }
+    .event { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid #eef2f6; }
     @media (max-width: 820px) {
       .grid, .ac-state { grid-template-columns: 1fr; }
-      .buttons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .chips { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .status-bar, header { align-items: flex-start; flex-direction: column; }
     }
   </style>
@@ -422,11 +430,13 @@ DASHBOARD_HTML = """
     <div class="card">
       <h2>Air conditioner</h2>
       <div class="ac-state">
-        <div id="powerState" class="power-state"><strong>—</strong><span>Assumed power</span></div>
-        <div>
+        <div class="power-panel">
+          <div id="powerState" class="power-state"><strong>—</strong><span>Power state</span></div>
+          <button class="sync" title="Correct LocalAIR's power state without sending IR" onclick="syncPower()">Sync Power</button>
+        </div>
+        <div class="state-detail">
           <div id="chips" class="chips"></div>
           <p class="muted">State follows detected IR. Sync changes LocalAIR only.</p>
-          <button class="sync" title="Correct LocalAIR's power state without sending IR" onclick="syncPower()">Sync Power</button>
         </div>
       </div>
     </div>
@@ -467,9 +477,15 @@ DASHBOARD_HTML = """
 const labels = {
   power: "Power", mode_heat: "Heat", mode_cool: "Cool", mode_dry: "Dry",
   mode_fan: "Fan", fan_low: "Low", fan_mid: "Mid", fan_high: "High",
-  temp_down: "Temp −", temp_up: "Temp +", swing: "Swing", timer: "Timer", unit_cf: "C/F"
+  temp_down: "Temp −", temp_up: "Temp +", swing: "Swing", timer: "Timer", unit_cf: "°C/°F"
 };
-const order = ["power", "temp_down", "temp_up", "mode_heat", "mode_cool", "mode_dry", "mode_fan", "fan_low", "fan_mid", "fan_high", "swing", "timer", "unit_cf"];
+const buttonGroups = [
+  ["Power", ["power"]],
+  ["Temperature", ["temp_down", "temp_up"]],
+  ["Mode", ["mode_heat", "mode_cool", "mode_dry", "mode_fan"]],
+  ["Fan speed", ["fan_low", "fan_mid", "fan_high"]],
+  ["Other", ["swing", "timer", "unit_cf"]]
+];
 
 function title(value) {
   if (!value) return "Unknown";
@@ -494,7 +510,7 @@ async function refreshStatus() {
   const power = data.ac_state.power || "unknown";
   const powerBox = document.getElementById("powerState");
   powerBox.className = `power-state ${power}`;
-  powerBox.innerHTML = `<strong>${title(power)}</strong><span>Assumed power</span>`;
+  powerBox.innerHTML = `<strong>${title(power)}</strong><span>Power state</span>`;
   document.getElementById("chips").innerHTML = [
     ["Mode", data.ac_state.mode],
     ["Set", data.ac_state.temperature ? `${data.ac_state.temperature}°C` : null],
@@ -503,11 +519,19 @@ async function refreshStatus() {
   ].map(([k, v]) => `<span class="chip">${k}: ${title(v)}</span>`).join("");
 
   const buttons = document.getElementById("buttons");
-  buttons.innerHTML = order.map(command => {
-    const disabled = data.ir_commands[command] ? "" : "disabled";
-    const cls = command === "power" ? "primary" : "";
-    return `<button class="${cls}" ${disabled} onclick="sendIR('${command}')">${labels[command]}</button>`;
-  }).join("");
+  buttons.className = "button-groups";
+  buttons.innerHTML = buttonGroups.map(([group, commands]) => `
+    <div class="button-group">
+      <div class="button-group-title">${group}</div>
+      <div class="buttons">
+        ${commands.map(command => {
+          const disabled = data.ir_commands[command] ? "" : "disabled";
+          const cls = command === "power" ? "primary" : "";
+          return `<button class="${cls}" ${disabled} onclick="sendIR('${command}')">${labels[command]}</button>`;
+        }).join("")}
+      </div>
+    </div>
+  `).join("");
 
   document.getElementById("lastResult").textContent = data.last_result ? data.last_result.message : "";
   document.getElementById("events").innerHTML = data.events.length
@@ -537,7 +561,7 @@ function drawChart(points, range) {
   const w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
-  const left = 58, right = 58, top = 18, bottom = 42;
+  const left = 58, right = 58, top = 24, bottom = 42;
   const gw = w - left - right, gh = h - top - bottom;
 
   if (points.length === 0) {
@@ -594,6 +618,16 @@ function drawChart(points, range) {
     ctx.font = "12px sans-serif";
     ctx.textBaseline = "middle";
     ctx.lineWidth = 1;
+
+    ctx.textBaseline = "top";
+    ctx.font = "12px sans-serif";
+    ctx.fillStyle = "#ef6c42";
+    ctx.textAlign = "right";
+    ctx.fillText("°C", left - 8, 4);
+    ctx.fillStyle = "#2170d1";
+    ctx.textAlign = "left";
+    ctx.fillText("%", left + gw + 8, 4);
+    ctx.textBaseline = "middle";
 
     for (const value of tempScale.ticks) {
       const y = yFor(value, tempScale.min, tempScale.max);

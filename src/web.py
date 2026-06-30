@@ -375,6 +375,12 @@ DASHBOARD_HTML = """
     button:disabled { opacity: .45; cursor: not-allowed; }
     .chart-card { grid-column: 1 / -1; }
     .chart-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .chart-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .legend { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; font-weight: 700; }
+    .legend span { display: inline-flex; align-items: center; gap: 5px; }
+    .legend i { width: 18px; height: 4px; border-radius: 999px; display: inline-block; }
+    .legend .temp-line { background: var(--orange); }
+    .legend .humidity-line { background: var(--blue); }
     select { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; background: white; }
     canvas { width: 100%; height: 270px; display: block; }
     .events { grid-column: 1 / -1; }
@@ -405,12 +411,12 @@ DASHBOARD_HTML = """
     <div class="card">
       <h2>Temperature</h2>
       <div id="temperature" class="metric temp">--.-°C</div>
-      <div class="muted">Local sensor · DP 1</div>
+      <div class="muted">Current room temperature</div>
     </div>
     <div class="card">
       <h2>Humidity</h2>
       <div id="humidity" class="metric humidity">--%</div>
-      <div class="muted">Relative humidity · DP 2</div>
+      <div class="muted">Current relative humidity</div>
     </div>
 
     <div class="card">
@@ -419,8 +425,8 @@ DASHBOARD_HTML = """
         <div id="powerState" class="power-state"><strong>—</strong><span>Assumed power</span></div>
         <div>
           <div id="chips" class="chips"></div>
-          <p class="muted">Observed Sensibo/remote IR updates this assumed state. Sync changes state only.</p>
-          <button class="sync" onclick="syncPower()">Sync Power</button>
+          <p class="muted">State follows detected IR. Sync changes LocalAIR only.</p>
+          <button class="sync" title="Correct LocalAIR's power state without sending IR" onclick="syncPower()">Sync Power</button>
         </div>
       </div>
     </div>
@@ -434,12 +440,18 @@ DASHBOARD_HTML = """
     <div class="card chart-card">
       <div class="chart-tools">
         <h2>History</h2>
-        <select id="range" onchange="loadHistory()">
-          <option value="1h" selected>Hourly</option>
-          <option value="24h">Daily</option>
-          <option value="7d">Weekly</option>
-          <option value="31d">Monthly</option>
-        </select>
+        <div class="chart-actions">
+          <div class="legend">
+            <span><i class="temp-line"></i>Temperature</span>
+            <span><i class="humidity-line"></i>Humidity</span>
+          </div>
+          <select id="range" onchange="loadHistory()">
+            <option value="1h" selected>Hourly</option>
+            <option value="24h">Daily</option>
+            <option value="7d">Weekly</option>
+            <option value="31d">Monthly</option>
+          </select>
+        </div>
       </div>
       <canvas id="chart" width="1100" height="270"></canvas>
     </div>

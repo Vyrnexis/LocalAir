@@ -1,2 +1,1 @@
-"""LocalAir desktop application."""
-
+"""LocalAIR web application package."""

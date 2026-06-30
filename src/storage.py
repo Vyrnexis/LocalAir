@@ -165,33 +165,42 @@ class LocalAirStore:
         with self.lock, self._connect() as db:
             rows = db.execute(
                 """
-                SELECT
-                  strftime(
-                    '%Y-%m-%dT%H:%M:00',
-                    timestamp,
-                    printf(
-                      '-%d minutes',
-                      CAST(strftime('%M', timestamp) AS INTEGER) % ?
-                    )
-                  ) AS bucket,
-                  AVG(temperature_c) AS temperature_c,
-                  AVG(humidity_percent) AS humidity_percent
+                SELECT timestamp, temperature_c, humidity_percent
                 FROM sensor_readings
                 WHERE timestamp >= ?
                   AND temperature_c IS NOT NULL
                   AND humidity_percent IS NOT NULL
-                GROUP BY bucket
-                ORDER BY bucket
+                ORDER BY timestamp
                 """,
-                (bucket_minutes, start.isoformat(timespec="seconds")),
+                (start.isoformat(timespec="seconds"),),
             ).fetchall()
+
+        buckets: dict[datetime, list[tuple[float, int]]] = {}
+        for row in rows:
+            timestamp = datetime.fromisoformat(row["timestamp"])
+            timestamp = timestamp.astimezone()
+            minute = timestamp.minute - (timestamp.minute % bucket_minutes)
+            bucket = timestamp.replace(
+                minute=minute, second=0, microsecond=0
+            )
+            buckets.setdefault(bucket, []).append(
+                (float(row["temperature_c"]), int(row["humidity_percent"]))
+            )
+
         return [
             {
-                "timestamp": row["bucket"],
-                "temperature_c": round(row["temperature_c"], 1),
-                "humidity_percent": round(row["humidity_percent"]),
+                "timestamp": bucket.isoformat(timespec="seconds"),
+                "temperature_c": round(
+                    sum(temperature for temperature, _humidity in values)
+                    / len(values),
+                    1,
+                ),
+                "humidity_percent": round(
+                    sum(humidity for _temperature, humidity in values)
+                    / len(values)
+                ),
             }
-            for row in rows
+            for bucket, values in sorted(buckets.items())
         ]
 
     def cleanup_if_due(self) -> None:

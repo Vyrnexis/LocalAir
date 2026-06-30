@@ -3,11 +3,12 @@ from __future__ import annotations
 import stat
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from src.config import AppConfig, load_config, save_config
 from src.device import ConnectionStatus, TuyaDevice, update_ac_state
+from src.storage import LocalAirStore
 
 
 class ConfigTests(unittest.TestCase):
@@ -110,6 +111,27 @@ class DeviceTests(unittest.TestCase):
 
     def test_unknown_toggle_state_remains_unknown(self) -> None:
         self.assertEqual(update_ac_state({}, "power"), {})
+
+
+class StorageTests(unittest.TestCase):
+    def test_history_preserves_local_timezone_offset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalAirStore(Path(directory) / "localair.db", 31)
+            timestamp = datetime(
+                2026, 6, 30, 10, 59, 40, tzinfo=timezone(timedelta(hours=8))
+            )
+            store.add_reading(
+                TuyaDevice._parse_status(
+                    {"dps": {"1": 285, "2": 39}},
+                    timestamp,
+                )
+            )
+
+            points = store.history("1h")
+
+            self.assertEqual(len(points), 1)
+            self.assertTrue(points[0]["timestamp"].startswith("2026-06-30T10:59:00"))
+            self.assertIn("+08:00", points[0]["timestamp"])
 
 
 if __name__ == "__main__":

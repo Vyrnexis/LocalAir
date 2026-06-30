@@ -26,7 +26,7 @@ For normal public installs, use localair.xml after the public image exists.
   <Category>HomeAutomation: Tools:</Category>
   <WebUI>http://[IP]:[PORT:8787]/</WebUI>
   <TemplateURL>https://codeberg.org/Vyrnexis/localAIR/raw/branch/main/unraid/localair-local.xml</TemplateURL>
-  <Icon>https://codeberg.org/Vyrnexis/localAIR/raw/branch/main/unraid/localair.png</Icon>
+  <Icon>/mnt/user/appdata/localAIR/unraid/localair.png</Icon>
   <ExtraParams/>
   <PostArgs/>
   <CPUset/>

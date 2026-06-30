@@ -113,7 +113,7 @@ Use two separate folders:
 
 ```text
 /mnt/user/appdata/localair      runtime data: config, database, logs
-/mnt/user/appdata/localair-src  cloned source repo and Docker build files
+/mnt/user/appdata/localAIR      cloned source repo and Docker build files
 ```
 
 Do not delete `/mnt/user/appdata/localair` unless you intentionally want to
@@ -125,8 +125,8 @@ Clone the repo:
 
 ```sh
 cd /mnt/user/appdata
-git clone https://codeberg.org/Vyrnexis/localAIR.git localair-src
-cd /mnt/user/appdata/localair-src
+git clone https://codeberg.org/Vyrnexis/localAIR.git localAIR
+cd /mnt/user/appdata/localAIR
 ```
 
 Create the runtime appdata folder:
@@ -164,7 +164,7 @@ Install the local Unraid template:
 ```sh
 mkdir -p /boot/config/plugins/dockerMan/templates-user
 
-cp /mnt/user/appdata/localair-src/unraid/localair-local.xml \
+cp /mnt/user/appdata/localAIR/unraid/localair-local.xml \
   /boot/config/plugins/dockerMan/templates-user/my-localair.xml
 ```
 
@@ -229,7 +229,7 @@ metadata. Use the Unraid template if you want proper Unraid UI integration.
 From the source folder:
 
 ```sh
-cd /mnt/user/appdata/localair-src
+cd /mnt/user/appdata/localAIR
 git pull
 docker build -t localair:latest .
 ```

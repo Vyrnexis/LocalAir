@@ -2,6 +2,18 @@
 
 LocalAIR is intended to run as an always-on Unraid Docker container.
 
+For local source builds, this documentation assumes the repository is cloned to:
+
+```text
+/mnt/user/appdata/localAIR
+```
+
+That is the default folder name created by:
+
+```sh
+git clone https://codeberg.org/Vyrnexis/localAIR.git
+```
+
 ## Appdata
 
 Create:

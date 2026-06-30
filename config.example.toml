@@ -1,0 +1,42 @@
+# Copy to ~/.config/localair/config.toml and replace the placeholder key.
+[device]
+ip_address = "192.168.1.145"
+device_id = "bfc626075b28194ecfhor5"
+local_key = "REPLACE_WITH_YOUR_LOCAL_KEY"
+protocol_version = 3.5
+poll_interval_seconds = 30
+
+[server]
+host = "0.0.0.0"
+port = 8787
+
+[history]
+retention_days = 31
+
+# NEC address and one-byte command values for the learned remote.
+[ir]
+address = 0x08E7
+
+[ir.commands]
+power = 0x00
+timer = 0x80
+unit_cf = 0x20
+swing = 0x60
+mode_fan = 0x10
+mode_cool = 0x28
+mode_dry = 0x30
+mode_heat = 0x90
+temp_up = 0xA8
+temp_down = 0xB0
+fan_low = 0x50
+fan_mid = 0x70
+fan_high = 0x68
+
+# Optional starting point for assumed state tracking.
+[ac_state]
+power = "on"
+mode = "heat"
+temperature = "25"
+fan = "mid"
+swing = "off"
+# timer = "off"

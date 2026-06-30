@@ -1,0 +1,207 @@
+"""SQLite persistence for LocalAIR web/history data."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from pathlib import Path
+import sqlite3
+import threading
+
+from .device import DeviceReading
+
+
+class LocalAirStore:
+    """Small thread-safe SQLite wrapper used by the web service."""
+
+    def __init__(self, path: Path, retention_days: int) -> None:
+        self.path = path
+        self.retention_days = retention_days
+        self.lock = threading.Lock()
+        self.last_cleanup: datetime | None = None
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self._connect().close()
+        self._migrate()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path, timeout=10)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA foreign_keys=ON")
+        return connection
+
+    def _migrate(self) -> None:
+        with self.lock, self._connect() as db:
+            db.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS sensor_readings (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  timestamp TEXT NOT NULL,
+                  temperature_c REAL,
+                  humidity_percent INTEGER,
+                  status TEXT NOT NULL,
+                  error_message TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_sensor_readings_timestamp
+                  ON sensor_readings(timestamp);
+
+                CREATE TABLE IF NOT EXISTS ir_events (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  timestamp TEXT NOT NULL,
+                  source TEXT NOT NULL,
+                  command TEXT,
+                  nec_hex TEXT,
+                  known INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_ir_events_timestamp
+                  ON ir_events(timestamp);
+
+                CREATE TABLE IF NOT EXISTS ac_state_events (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  timestamp TEXT NOT NULL,
+                  source TEXT NOT NULL,
+                  field TEXT NOT NULL,
+                  old_value TEXT,
+                  new_value TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_ac_state_events_timestamp
+                  ON ac_state_events(timestamp);
+                """
+            )
+
+    def add_reading(self, reading: DeviceReading) -> None:
+        with self.lock, self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO sensor_readings (
+                  timestamp, temperature_c, humidity_percent, status,
+                  error_message
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    reading.timestamp.isoformat(timespec="seconds"),
+                    reading.temperature_c,
+                    reading.humidity_percent,
+                    reading.connection_status.value,
+                    reading.error_message,
+                ),
+            )
+        self.cleanup_if_due()
+
+    def add_ir_event(
+        self,
+        source: str,
+        command: str | None,
+        nec_hex: str | None = None,
+        known: bool = True,
+    ) -> None:
+        with self.lock, self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO ir_events (
+                  timestamp, source, command, nec_hex, known
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    datetime.now().astimezone().isoformat(timespec="seconds"),
+                    source,
+                    command,
+                    nec_hex,
+                    1 if known else 0,
+                ),
+            )
+
+    def add_state_events(
+        self,
+        source: str,
+        old_state: dict[str, str],
+        new_state: dict[str, str],
+    ) -> None:
+        rows = []
+        for key in sorted(set(old_state) | set(new_state)):
+            old = old_state.get(key)
+            new = new_state.get(key)
+            if old != new:
+                rows.append((key, old, new))
+        if not rows:
+            return
+
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        with self.lock, self._connect() as db:
+            db.executemany(
+                """
+                INSERT INTO ac_state_events (
+                  timestamp, source, field, old_value, new_value
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (timestamp, source, field, old, new)
+                    for field, old, new in rows
+                ],
+            )
+
+    def recent_ir_events(self, limit: int = 8) -> list[dict]:
+        with self.lock, self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT timestamp, source, command, nec_hex, known
+                FROM ir_events
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def history(self, range_name: str) -> list[dict]:
+        hours, bucket_minutes = {
+            "1h": (1, 1),
+            "6h": (6, 2),
+            "24h": (24, 5),
+            "7d": (24 * 7, 30),
+            "31d": (24 * 31, 120),
+        }.get(range_name, (24, 5))
+        start = datetime.now().astimezone() - timedelta(hours=hours)
+
+        with self.lock, self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT
+                  strftime(
+                    '%Y-%m-%dT%H:%M:00',
+                    timestamp,
+                    printf(
+                      '-%d minutes',
+                      CAST(strftime('%M', timestamp) AS INTEGER) % ?
+                    )
+                  ) AS bucket,
+                  AVG(temperature_c) AS temperature_c,
+                  AVG(humidity_percent) AS humidity_percent
+                FROM sensor_readings
+                WHERE timestamp >= ?
+                  AND temperature_c IS NOT NULL
+                  AND humidity_percent IS NOT NULL
+                GROUP BY bucket
+                ORDER BY bucket
+                """,
+                (bucket_minutes, start.isoformat(timespec="seconds")),
+            ).fetchall()
+        return [
+            {
+                "timestamp": row["bucket"],
+                "temperature_c": round(row["temperature_c"], 1),
+                "humidity_percent": round(row["humidity_percent"]),
+            }
+            for row in rows
+        ]
+
+    def cleanup_if_due(self) -> None:
+        now = datetime.now().astimezone()
+        if self.last_cleanup and now - self.last_cleanup < timedelta(hours=24):
+            return
+        cutoff = now - timedelta(days=self.retention_days)
+        with self.lock, self._connect() as db:
+            db.execute(
+                "DELETE FROM sensor_readings WHERE timestamp < ?",
+                (cutoff.isoformat(timespec="seconds"),),
+            )
+        self.last_cleanup = now

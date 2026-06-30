@@ -1,0 +1,11 @@
+services:
+  localair:
+    build: .
+    container_name: localair
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      LOCALAIR_DATA: /data
+      LOCALAIR_PORT: 8787
+    volumes:
+      - /mnt/user/appdata/localair:/data

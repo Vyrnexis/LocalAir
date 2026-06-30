@@ -1,0 +1,2 @@
+"""LocalAir desktop application."""
+

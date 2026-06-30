@@ -295,8 +295,11 @@ class DeviceMonitor:
         )
         device.set_socketPersistent(True)
         device.set_socketTimeout(1)
+        if not self._poll_sensor(device, config):
+            self.stop_event.wait(3)
+            return
         self._start_learning(device)
-        next_poll = time.monotonic() + 2.0
+        next_poll = time.monotonic() + config.poll_interval_seconds
 
         try:
             while not self.stop_event.is_set():
@@ -318,14 +321,11 @@ class DeviceMonitor:
                     self._start_learning(device)
 
                 if time.monotonic() >= next_poll:
-                    response = device.status()
+                    if not self._poll_sensor(device, config):
+                        return
                     next_poll = (
                         time.monotonic() + config.poll_interval_seconds
                     )
-                    reading = TuyaDevice._parse_status(
-                        response, datetime.now().astimezone()
-                    )
-                    self.on_reading(reading)
                     self._start_learning(device)
                 else:
                     response = device._send_receive(None)
@@ -337,6 +337,14 @@ class DeviceMonitor:
                 device.study_end()
             except Exception:
                 pass
+
+    def _poll_sensor(self, device, config: AppConfig) -> bool:
+        response = device.status()
+        reading = TuyaDevice._parse_status(
+            response, datetime.now().astimezone()
+        )
+        self.on_reading(reading)
+        return reading.ok
 
     @staticmethod
     def _start_learning(device) -> None:

@@ -132,26 +132,25 @@ Docker image. This repo includes:
 
 ```text
 Dockerfile
-.github/workflows/docker.yml
 unraid/localair.xml
+unraid/localair-local.xml
 unraid/localair.svg
 unraid/README.md
 ```
 
-The workflow publishes an image to GitHub Container Registry:
+The public Unraid template points at this Docker image:
 
 ```text
-ghcr.io/YOUR_GITHUB_USER/localair:latest
+vyrnexis/localair:latest
 ```
 
-Before sharing the Unraid template, replace these placeholders in
-`unraid/localair.xml`:
+Publish it to Docker Hub with:
 
-```text
-your-github-user
+```sh
+docker login
+docker build -t vyrnexis/localair:latest .
+docker push vyrnexis/localair:latest
 ```
-
-with the real GitHub username or organisation that owns the repository.
 
 After the image is published, Unraid users can install using the XML template.
 The important template settings are:
@@ -167,8 +166,8 @@ See `unraid/README.md` for the short Unraid-focused install notes. If Community
 Apps requires a PNG icon, export `unraid/localair.svg` to `unraid/localair.png`
 and update the template icon URL.
 
-For your own Unraid server before publishing a public image, the simplest path
-is still:
+For your own Unraid server before publishing a public image, either use
+`unraid/localair-local.xml` after building `localair:latest` locally, or run:
 
 ```sh
 git clone YOUR_REPO_URL /mnt/user/appdata/localair-src

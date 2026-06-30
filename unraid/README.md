@@ -52,19 +52,39 @@ Open:
 http://YOUR_UNRAID_IP:8787
 ```
 
-## Publishing the template
+## Templates
 
-Before sharing the template publicly, replace every `your-github-user`
-placeholder in `localair.xml` with the real GitHub username or organisation.
+There are two templates:
+
+```text
+localair.xml        Public install using vyrnexis/localair:latest
+localair-local.xml  Local install using an image already built as localair:latest
+```
+
+Use `localair-local.xml` if you are testing on your own Unraid server before a
+public image exists.
+
+## Publishing the public template
+
+The public template points to the Codeberg source repository:
+
+```text
+https://codeberg.org/Vyrnexis/localAIR
+```
 
 The Docker image should exist at:
 
 ```text
-ghcr.io/YOUR_GITHUB_USER/localair:latest
+vyrnexis/localair:latest
 ```
 
-The included GitHub Actions workflow publishes that image automatically from the
-`main` branch.
+Publish it to Docker Hub with:
+
+```sh
+docker login
+docker build -t vyrnexis/localair:latest .
+docker push vyrnexis/localair:latest
+```
 
 If Unraid Community Apps does not accept the SVG icon, export `localair.svg` to
 `localair.png` and update the `<Icon>` URL.

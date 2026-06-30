@@ -8,6 +8,8 @@ services:
       LOCALAIR_DATA: /data
       LOCALAIR_PORT: 8787
       TZ: Etc/UTC
+    # For standard Linux hosts, you can change the host path to a local directory:
+    # - ./data:/data
     volumes:
       - /mnt/user/appdata/localair:/data
     logging:

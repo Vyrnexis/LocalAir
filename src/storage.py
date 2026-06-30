@@ -160,6 +160,7 @@ class LocalAirStore:
             "31d": (24 * 31, 120),
         }.get(range_name, (24, 5))
         start = datetime.now().astimezone() - timedelta(hours=hours)
+        start_str = start.isoformat(timespec="seconds")
 
         with self.lock, self._connect() as db:
             rows = db.execute(
@@ -168,16 +169,16 @@ class LocalAirStore:
                 FROM sensor_readings
                 WHERE temperature_c IS NOT NULL
                   AND humidity_percent IS NOT NULL
+                  AND datetime(timestamp) >= datetime(?)
                 ORDER BY timestamp
                 """,
+                (start_str,),
             ).fetchall()
 
         buckets: dict[datetime, list[tuple[float, int]]] = {}
         for row in rows:
             timestamp = datetime.fromisoformat(row["timestamp"])
             timestamp = timestamp.astimezone()
-            if timestamp < start:
-                continue
             minute = timestamp.minute - (timestamp.minute % bucket_minutes)
             bucket = timestamp.replace(
                 minute=minute, second=0, microsecond=0
@@ -207,9 +208,27 @@ class LocalAirStore:
         if self.last_cleanup and now - self.last_cleanup < timedelta(hours=24):
             return
         cutoff = now - timedelta(days=self.retention_days)
+        cutoff_str = cutoff.isoformat(timespec="seconds")
         with self.lock, self._connect() as db:
             db.execute(
-                "DELETE FROM sensor_readings WHERE timestamp < ?",
-                (cutoff.isoformat(timespec="seconds"),),
+                """
+                DELETE FROM sensor_readings
+                WHERE datetime(timestamp) < datetime(?)
+                """,
+                (cutoff_str,),
+            )
+            db.execute(
+                """
+                DELETE FROM ir_events
+                WHERE datetime(timestamp) < datetime(?)
+                """,
+                (cutoff_str,),
+            )
+            db.execute(
+                """
+                DELETE FROM ac_state_events
+                WHERE datetime(timestamp) < datetime(?)
+                """,
+                (cutoff_str,),
             )
         self.last_cleanup = now

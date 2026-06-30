@@ -249,7 +249,10 @@ def settings() -> str:
 async def save_settings(request: Request) -> RedirectResponse:
     body = (await request.body()).decode()
     data = {key: values[-1] for key, values in parse_qs(body).items()}
-    get_service().update_settings(data)
+    try:
+        get_service().update_settings(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return RedirectResponse("/", status_code=303)
 
 
@@ -557,8 +560,11 @@ async function loadHistory() {
 
 function drawChart(points, range) {
   const canvas = document.getElementById("chart");
+  const w = canvas.clientWidth || 1100;
+  const h = canvas.clientHeight || 270;
+  canvas.width = w;
+  canvas.height = h;
   const ctx = canvas.getContext("2d");
-  const w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
   const left = 58, right = 58, top = 24, bottom = 42;

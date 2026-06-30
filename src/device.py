@@ -312,7 +312,7 @@ class DeviceMonitor:
             control_type=1,
         )
         device.set_socketPersistent(True)
-        device.set_socketTimeout(1)
+        device.set_socketTimeout(0.25)
         if not self._poll_sensor(device, config):
             self.stop_event.wait(3)
             return
@@ -405,6 +405,8 @@ class DeviceMonitor:
         )
 
         pulses = IRRemoteControlDevice.base64_to_pulses(code.strip())
+        if not pulses or len(pulses) < 10:
+            return True
         decoded = IRRemoteControlDevice.pulses_to_nec(pulses)
         expected = {
             TuyaDevice._nec_frame(config.ir_address, value): name

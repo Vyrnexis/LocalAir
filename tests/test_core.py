@@ -154,6 +154,70 @@ class StorageTests(unittest.TestCase):
 
             self.assertEqual(store.history("6h"), [])
 
+    def test_history_handles_mixed_timezone_offsets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalAirStore(Path(directory) / "localair.db", 31)
+            recent_utc = datetime.now(timezone.utc) - timedelta(minutes=30)
+            with store._connect() as db:
+                db.execute(
+                    """
+                    INSERT INTO sensor_readings (
+                      timestamp, temperature_c, humidity_percent, status
+                    ) VALUES (?, 21.5, 48, 'Connected')
+                    """,
+                    (recent_utc.isoformat(timespec="seconds"),),
+                )
+
+            points = store.history("1h")
+
+            self.assertEqual(len(points), 1)
+
+    def test_cleanup_prunes_all_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalAirStore(Path(directory) / "localair.db", 1)
+            two_days_ago = (
+                datetime.now().astimezone() - timedelta(days=2)
+            ).isoformat(timespec="seconds")
+            with store._connect() as db:
+                db.execute(
+                    """
+                    INSERT INTO sensor_readings (
+                      timestamp, temperature_c, humidity_percent, status
+                    ) VALUES (?, 20.0, 50, 'Connected')
+                    """,
+                    (two_days_ago,),
+                )
+                db.execute(
+                    """
+                    INSERT INTO ir_events (
+                      timestamp, source, command, known
+                    ) VALUES (?, 'localair', 'power', 1)
+                    """,
+                    (two_days_ago,),
+                )
+                db.execute(
+                    """
+                    INSERT INTO ac_state_events (
+                      timestamp, source, field, old_value, new_value
+                    ) VALUES (?, 'sync', 'power', 'off', 'on')
+                    """,
+                    (two_days_ago,),
+                )
+
+            store.cleanup_if_due()
+
+            with store._connect() as db:
+                tables = (
+                    "sensor_readings",
+                    "ir_events",
+                    "ac_state_events",
+                )
+                for table in tables:
+                    count = db.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0]
+                    self.assertEqual(count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

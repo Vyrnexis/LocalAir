@@ -27,6 +27,16 @@ This first version targets a Tuya IR temperature/humidity remote like:
 My AC / Tuya IR Temp Humidity Remote
 ```
 
+The project was developed and tested with an Amazon Australia device listing:
+
+```text
+ASIN: B0CP775PDK
+https://www.amazon.com.au/dp/B0CP775PDK
+```
+
+Listings for these Tuya devices can change names over time, so the important
+technical details are the Tuya local protocol support and the DPS mapping below.
+
 Known DPS mapping:
 
 ```text
@@ -460,3 +470,7 @@ scripts/           helper scripts
 tests/             core tests
 unraid/            Unraid templates and icon
 ```
+
+## License
+
+LocalAIR is released under the MIT License. See `LICENSE`.

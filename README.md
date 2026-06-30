@@ -366,6 +366,16 @@ The dashboard includes:
 The Sync Power button only changes LocalAIR's saved power state. It does not
 send an IR command.
 
+### Screenshots
+
+Main dashboard:
+
+![LocalAIR web dashboard](screenshots/LocalAIR.Web.UI.png)
+
+Settings page:
+
+![LocalAIR settings page](screenshots/LocalAIR.Web.UI.Settings.png)
+
 ## IR and AC state behavior
 
 Learned commands are stored as NEC bytes in `config.toml`. LocalAIR converts

@@ -24,7 +24,7 @@ LocalAIR does not need cloud access after you have the Tuya device details:
 This first version targets a Tuya IR temperature/humidity remote like:
 
 ```text
-Fish Temp / Tuya IR Temp Humidity Remote
+My AC / Tuya IR Temp Humidity Remote
 ```
 
 Known DPS mapping:

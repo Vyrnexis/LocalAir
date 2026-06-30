@@ -377,7 +377,7 @@ localair.db       SQLite history database
 unknown-ir.log    unknown observed IR signals
 ```
 
-SQLite stores raw sensor readings for 31 days by default. Larger graph ranges
+SQLite stores raw sensor readings, IR events, and AC state history for 31 days by default. Larger graph ranges
 are down-sampled before being sent to the browser.
 
 ## Web dashboard

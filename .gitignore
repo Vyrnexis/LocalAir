@@ -12,3 +12,7 @@ dist/
 # Local credentials and developer overrides
 config.toml
 .env
+tinytuya.json
+devices.json
+snapshot.json
+tuya-raw.json

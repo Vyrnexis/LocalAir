@@ -152,9 +152,59 @@ class LocalAirStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def recent_activity_events(self, limit: int = 10) -> list[dict]:
+        """Return recent operator-facing activity for the dashboard."""
+        with self.lock, self._connect() as db:
+            ir_rows = db.execute(
+                """
+                SELECT timestamp, source, command, nec_hex, known
+                FROM ir_events
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            error_rows = db.execute(
+                """
+                SELECT timestamp, status, error_message
+                FROM sensor_readings
+                WHERE status != 'Connected'
+                   OR error_message IS NOT NULL
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        events = [
+            {
+                "kind": "ir",
+                "timestamp": row["timestamp"],
+                "source": row["source"],
+                "command": row["command"],
+                "nec_hex": row["nec_hex"],
+                "known": row["known"],
+            }
+            for row in ir_rows
+        ]
+        events.extend(
+            {
+                "kind": "device",
+                "timestamp": row["timestamp"],
+                "source": "device",
+                "status": row["status"],
+                "error_message": row["error_message"],
+            }
+            for row in error_rows
+        )
+        return sorted(
+            events,
+            key=lambda event: datetime.fromisoformat(event["timestamp"]),
+            reverse=True,
+        )[:limit]
+
     def history(self, range_name: str) -> list[dict]:
         hours, bucket_minutes = {
-            "1h": (1, 1),
             "24h": (24, 5),
             "7d": (24 * 7, 30),
             "31d": (24 * 31, 120),

@@ -97,7 +97,7 @@ class LocalAirService:
                 if last_ir
                 else None
             ),
-            "events": self.store.recent_ir_events(),
+            "events": self.store.recent_activity_events(),
         }
 
     def send_ir(self, command: str) -> None:
@@ -396,6 +396,7 @@ DASHBOARD_HTML = """
     .events { grid-column: 1 / -1; }
     .events h2 { margin-bottom: 8px; }
     .event { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid #eef2f6; }
+    .event span:last-child { color: var(--muted); white-space: nowrap; }
     @media (max-width: 820px) {
       .grid, .ac-state { grid-template-columns: 1fr; }
       .chips { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -459,8 +460,7 @@ DASHBOARD_HTML = """
             <span><i class="humidity-line"></i>Humidity</span>
           </div>
           <select id="range" onchange="loadHistory()">
-            <option value="1h" selected>Hourly</option>
-            <option value="24h">Daily</option>
+            <option value="24h" selected>Daily</option>
             <option value="7d">Weekly</option>
             <option value="31d">Monthly</option>
           </select>
@@ -470,7 +470,7 @@ DASHBOARD_HTML = """
     </div>
 
     <div class="card events">
-      <h2>Recent IR events</h2>
+      <h2>Recent activity</h2>
       <div id="events" class="muted">No events yet.</div>
     </div>
   </section>
@@ -497,6 +497,28 @@ function title(value) {
 
 function sourceTitle(value) {
   return value === "localair" ? "LocalAIR" : title(value);
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, char => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[char]));
+}
+
+function formatDateTime(value) {
+  return new Date(value).toLocaleString([], {
+    month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit"
+  });
+}
+
+function eventText(event) {
+  if (event.kind === "device") {
+    const detail = event.error_message ? ` — ${event.error_message}` : "";
+    return `Device · ${event.status || "Status"}${detail}`;
+  }
+  const command = event.command ? labels[event.command] || title(event.command) : event.nec_hex || "Unknown IR";
+  return `${sourceTitle(event.source)} IR · ${command}`;
 }
 
 async function refreshStatus() {
@@ -538,7 +560,7 @@ async function refreshStatus() {
 
   document.getElementById("lastResult").textContent = data.last_result ? data.last_result.message : "";
   document.getElementById("events").innerHTML = data.events.length
-    ? data.events.map(e => `<div class="event"><span>${sourceTitle(e.source)} · ${e.command || e.nec_hex || "Unknown"}</span><span>${new Date(e.timestamp).toLocaleTimeString()}</span></div>`).join("")
+    ? data.events.map(e => `<div class="event"><span>${escapeHtml(eventText(e))}</span><span>${formatDateTime(e.timestamp)}</span></div>`).join("")
     : "No events yet.";
 }
 
@@ -671,7 +693,7 @@ function drawChart(points, range) {
   function timeTicks(range, start, end) {
     const ticks = [];
     const startMs = start.getTime(), endMs = end.getTime();
-    const stepMinutes = { "1h": 15, "24h": 180, "7d": 1440, "31d": 10080 }[range] || 180;
+    const stepMinutes = { "24h": 180, "7d": 1440, "31d": 10080 }[range] || 180;
     const stepMs = stepMinutes * 60 * 1000;
     const first = Math.ceil(startMs / stepMs) * stepMs;
 

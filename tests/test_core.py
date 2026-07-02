@@ -135,7 +135,7 @@ class StorageTests(unittest.TestCase):
                 )
             )
 
-            points = store.history("1h")
+            points = store.history("24h")
 
             self.assertEqual(len(points), 1)
             expected = timestamp.astimezone().replace(second=0)
@@ -148,10 +148,11 @@ class StorageTests(unittest.TestCase):
                 datetime.fromisoformat(points[0]["timestamp"]).tzinfo
             )
 
-    def test_removed_six_hour_range_falls_back_to_default(self) -> None:
+    def test_removed_ranges_fall_back_to_daily(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = LocalAirStore(Path(directory) / "localair.db", 31)
 
+            self.assertEqual(store.history("1h"), [])
             self.assertEqual(store.history("6h"), [])
 
     def test_history_handles_mixed_timezone_offsets(self) -> None:
@@ -168,9 +169,27 @@ class StorageTests(unittest.TestCase):
                     (recent_utc.isoformat(timespec="seconds"),),
                 )
 
-            points = store.history("1h")
+            points = store.history("24h")
 
             self.assertEqual(len(points), 1)
+
+    def test_recent_activity_includes_ir_and_device_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalAirStore(Path(directory) / "localair.db", 31)
+            store.add_ir_event("localair", "power")
+            store.add_reading(
+                TuyaDevice._failed_reading(
+                    datetime.now().astimezone(),
+                    ConnectionStatus.ERROR,
+                    "Device returned an error.",
+                )
+            )
+
+            events = store.recent_activity_events()
+            kinds = {event["kind"] for event in events}
+
+            self.assertIn("ir", kinds)
+            self.assertIn("device", kinds)
 
     def test_cleanup_prunes_all_tables(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

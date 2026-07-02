@@ -389,8 +389,8 @@ The dashboard includes:
 - AC assumed state card
 - IR control buttons
 - Sync Power button
-- temperature/humidity history graph
-- recent IR event list
+- temperature/humidity history graph with Daily, Weekly, and Monthly views
+- recent activity list with IR events and device errors/disconnects
 - settings page
 
 The Sync Power button only changes LocalAIR's saved power state. It does not

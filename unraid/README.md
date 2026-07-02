@@ -99,8 +99,9 @@ docker build -t vyrnexis/localair:latest .
 docker push vyrnexis/localair:latest
 ```
 
-The templates use `localair.png` for the Docker page icon because Unraid is more
-reliable with PNG icons than SVG icons.
+The templates use the Codeberg raw `localair.png` URL for the Docker page icon.
+That avoids depending on a local icon file under `/mnt/user/appdata/localAIR`
+when testing locally built images.
 
 The Unraid Docker page may show `Version: not available` when using
 `localair-local.xml`. That is expected because the template uses a locally built

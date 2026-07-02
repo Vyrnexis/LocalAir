@@ -64,14 +64,26 @@ class DeviceTests(unittest.TestCase):
 
         self.assertEqual(reading.connection_status, ConnectionStatus.ERROR)
 
-    def test_tuya_error_message_is_reported(self) -> None:
+    def test_tuya_network_error_message_is_shortened(self) -> None:
         reading = TuyaDevice._parse_status(
             {"Error": "Network Error: Unable to Connect"},
             datetime.now().astimezone(),
         )
 
         self.assertEqual(reading.connection_status, ConnectionStatus.ERROR)
-        self.assertIn("Unable to Connect", reading.error_message or "")
+        self.assertEqual(reading.error_message, "Device unreachable.")
+
+    def test_tuya_payload_error_message_is_shortened(self) -> None:
+        reading = TuyaDevice._parse_status(
+            {"Error": "Unexpected Payload from Device"},
+            datetime.now().astimezone(),
+        )
+
+        self.assertEqual(reading.connection_status, ConnectionStatus.ERROR)
+        self.assertEqual(
+            reading.error_message,
+            "Unexpected device response.",
+        )
 
     def test_unknown_ir_command_is_rejected(self) -> None:
         result = TuyaDevice().send_ir(
@@ -138,7 +150,10 @@ class StorageTests(unittest.TestCase):
             points = store.history("24h")
 
             self.assertEqual(len(points), 1)
-            expected = timestamp.astimezone().replace(second=0)
+            expected = timestamp.astimezone().replace(
+                minute=timestamp.minute - (timestamp.minute % 5),
+                second=0,
+            )
             self.assertTrue(
                 points[0]["timestamp"].startswith(
                     expected.isoformat(timespec="seconds")

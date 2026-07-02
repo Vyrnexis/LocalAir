@@ -234,13 +234,22 @@ class TuyaDevice:
     def _tuya_error_message(data: dict[str, Any]) -> str:
         detail = data.get("Error") or data.get("Err") or data.get("error")
         if detail is None:
-            return "Device returned an error. Check its settings."
+            return "Device error. Check settings."
         text = str(detail).strip()
         if not text:
-            return "Device returned an error. Check its settings."
-        if len(text) > 160:
-            text = text[:157] + "..."
-        return f"Device returned an error: {text}"
+            return "Device error. Check settings."
+
+        lowered = text.lower()
+        if "unexpected payload" in lowered:
+            return "Unexpected device response."
+        if "check device key or version" in lowered:
+            return "Check device key or protocol version."
+        if "device unreachable" in lowered or "unable to connect" in lowered:
+            return "Device unreachable."
+
+        if len(text) > 120:
+            text = text[:117] + "..."
+        return f"Device error: {text}"
 
 
 class DeviceMonitor:

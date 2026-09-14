@@ -244,8 +244,15 @@ class TuyaDevice:
                     or not response.get("success")
                     or response.get("result") is False
                 ):
+                    reason = (
+                        str(response.get("msg", "")).strip()
+                        if isinstance(response, dict)
+                        else ""
+                    )
                     return CommandResult(
-                        False, "Tuya cloud rejected the IR command."
+                        False,
+                        "Tuya rejected the IR command."
+                        + (f" {reason}" if reason else ""),
                     )
             return CommandResult(True, message)
         except ImportError:

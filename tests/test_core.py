@@ -264,6 +264,8 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('data-theme="dark"', dashboard)
         self.assertIn("quadraticCurveTo", dashboard)
         self.assertIn('id="automationState"', dashboard)
+        self.assertIn('id="chartTooltip"', dashboard)
+        self.assertIn("/api/sync/power/${power}", dashboard)
         self.assertNotIn("mode_heat", dashboard)
 
 
@@ -338,6 +340,17 @@ class StorageTests(unittest.TestCase):
 
             self.assertIn("ir", kinds)
             self.assertIn("device", kinds)
+
+    def test_history_events_excludes_unknown_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalAirStore(Path(directory) / "localair.db", 31)
+            store.add_ir_event("climate", "climate_on")
+            store.add_ir_event("observed", None, "0x1234", known=False)
+
+            events = store.history_events("24h")
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["command"], "climate_on")
 
     def test_cleanup_prunes_all_tables(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

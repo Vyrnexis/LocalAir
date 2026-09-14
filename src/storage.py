@@ -207,6 +207,7 @@ class LocalAirStore:
         hours, bucket_minutes = {
             "24h": (24, 5),
             "7d": (24 * 7, 30),
+            "30d": (24 * 30, 120),
             "31d": (24 * 31, 120),
         }.get(range_name, (24, 5))
         start = datetime.now().astimezone() - timedelta(hours=hours)
@@ -252,6 +253,29 @@ class LocalAirStore:
             }
             for bucket, values in sorted(buckets.items())
         ]
+
+    # Return successful AC commands within the selected chart window.
+    def history_events(self, range_name: str) -> list[dict]:
+        hours = {
+            "24h": 24,
+            "7d": 24 * 7,
+            "30d": 24 * 30,
+            "31d": 24 * 31,
+        }.get(range_name, 24)
+        start = datetime.now().astimezone() - timedelta(hours=hours)
+        with self.lock, self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT timestamp, source, command
+                FROM ir_events
+                WHERE command IS NOT NULL
+                  AND known = 1
+                  AND datetime(timestamp) >= datetime(?)
+                ORDER BY timestamp
+                """,
+                (start.isoformat(timespec="seconds"),),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def cleanup_if_due(self) -> None:
         now = datetime.now().astimezone()

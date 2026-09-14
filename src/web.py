@@ -105,6 +105,8 @@ class LocalAirService:
             "device": {
                 "ip_address": config.ip_address,
                 "poll_interval_seconds": config.poll_interval_seconds,
+                "timezone": datetime.now().astimezone().tzname()
+                or "Local time",
             },
             "reading": {
                 "temperature_c": reading.temperature_c,
@@ -135,7 +137,7 @@ class LocalAirService:
                 if last_ir
                 else None
             ),
-            "events": self.store.recent_activity_events(),
+            "events": self.store.recent_activity_events(30),
         }
 
     def send_ir(self, command: str) -> CommandResult:
@@ -150,14 +152,28 @@ class LocalAirService:
             self._on_ir(command, "localair")
         return result
 
-    def sync_power(self) -> dict[str, str]:
+    def sync_power(self, power: str | None = None) -> dict[str, str]:
         with self.lock:
             current = self.config.ac_state.get("power")
-            next_power = "off" if current == "on" else "on"
+            next_power = power or ("off" if current == "on" else "on")
+            if next_power not in {"on", "off"}:
+                raise ValueError("Power state must be on or off.")
             new_state = dict(self.config.ac_state)
             new_state["power"] = next_power
         self._save_state(new_state, "sync")
         return {"power": next_power}
+
+    # Persist climate automation state and evaluate it immediately.
+    def set_climate_enabled(self, enabled: bool) -> dict[str, bool]:
+        with self.lock:
+            config = replace(self.config, climate_enabled=enabled).validated()
+        save_config(config)
+        with self.lock:
+            self.config = config
+            self.last_climate_attempt = None
+        self.monitor.update_config(config)
+        self.climate_event.set()
+        return {"enabled": enabled}
 
     def update_settings(self, data: dict[str, str]) -> None:
         with self.lock:
@@ -230,16 +246,22 @@ class LocalAirService:
         self.store.add_reading(reading)
 
     def _on_ir(self, command: str, source: str) -> None:
-        self.store.add_ir_event(source, command)
         with self.lock:
             config = self.config
             state = update_ac_state(config.ac_state, command)
             if command == "climate_on":
                 state["temperature"] = str(config.aircon_temperature)
+            event_command = command
+            if command == "power":
+                event_command = f"power_{state.get('power', 'unknown')}"
+            elif command in {"temp_up", "temp_down"}:
+                temperature = state.get("temperature", "unknown")
+                event_command = f"temperature_{temperature}"
+        self.store.add_ir_event(source, event_command)
         self._save_state(state, f"ir:{command}")
         with self.lock:
             self.last_ir = (
-                command,
+                event_command,
                 datetime.now().astimezone().isoformat(timespec="seconds"),
             )
 
@@ -381,7 +403,13 @@ def api_status() -> JSONResponse:
 
 @app.get("/api/history")
 def api_history(range: str = "24h") -> JSONResponse:
-    return JSONResponse({"points": get_service().store.history(range)})
+    store = get_service().store
+    return JSONResponse(
+        {
+            "points": store.history(range),
+            "events": store.history_events(range),
+        }
+    )
 
 
 @app.post("/api/ir/{command}")
@@ -396,6 +424,26 @@ def api_ir(command: str) -> JSONResponse:
 @app.post("/api/sync/power")
 def api_sync_power() -> JSONResponse:
     return JSONResponse({"ok": True, "state": get_service().sync_power()})
+
+
+@app.post("/api/sync/power/{power}")
+# Set the assumed AC power state without sending a device command.
+def api_set_power(power: str) -> JSONResponse:
+    try:
+        state = get_service().sync_power(power)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return JSONResponse({"ok": True, "state": state})
+
+
+@app.post("/api/climate/{state}")
+# Enable or disable automatic climate control from the dashboard.
+def api_set_climate(state: str) -> JSONResponse:
+    if state not in {"on", "off"}:
+        raise HTTPException(status_code=400, detail="State must be on or off.")
+    return JSONResponse(
+        {"ok": True, **get_service().set_climate_enabled(state == "on")}
+    )
 
 
 def html_escape(value: str) -> str:
@@ -462,7 +510,7 @@ DASHBOARD_HTML = """
       color: var(--text);
       transition: background-color .25s ease, color .25s ease;
     }
-    main { width: min(1160px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 42px; }
+    main { width: min(1420px, calc(100% - 32px)); margin: 0 auto; padding: 22px 0 42px; }
     header {
       display: flex; align-items: center; justify-content: space-between;
       gap: 16px; margin-bottom: 22px;
@@ -484,15 +532,12 @@ DASHBOARD_HTML = """
       border-radius: 12px; color: var(--text); background: var(--card);
       backdrop-filter: blur(18px);
     }
-    .status-bar {
-      padding: 0 2px; margin-bottom: 14px;
-      display: flex; align-items: center; justify-content: space-between; gap: 12px;
-      color: var(--muted); font-size: 14px;
-    }
+    .status-bar { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--muted); font-size: 13px; }
+    .status-spacer { flex: 1; }
     .dot { width: 9px; height: 9px; border-radius: 99px; background: #94a3b8; display: inline-block; }
     .dot.ok { background: var(--green); }
     .dot.error { background: var(--red); }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; margin-top: 14px; }
     .card {
       background: var(--card); border: 1px solid var(--line);
       border-radius: 24px; padding: 22px; box-shadow: var(--shadow);
@@ -500,38 +545,51 @@ DASHBOARD_HTML = """
     }
     .card h2 { margin: 0; font-size: 16px; letter-spacing: -.02em; }
     .eyebrow { color: var(--muted); font-size: 12px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
-    .metric-card { min-height: 180px; display: flex; flex-direction: column; justify-content: space-between; }
+    .hero-card { grid-column: span 6; min-height: 164px; position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: center; }
+    .hero-card::after { content: ""; position: absolute; inset: auto -10% -55% 5%; height: 150px; border-radius: 50%; background: color-mix(in srgb, var(--blue) 9%, transparent); transform: rotate(-4deg); }
+    .hero-title { margin: 7px 0 5px; color: var(--blue); font-size: clamp(30px, 4vw, 46px); line-height: 1; letter-spacing: -.055em; }
+    .hero-summary { margin: 0; font-size: 17px; font-weight: 800; }
+    .hero-detail { margin: 7px 0 0; color: var(--muted); }
+    .metric-card { grid-column: span 3; min-height: 164px; display: flex; flex-direction: column; justify-content: space-between; }
     .metric { font-size: clamp(48px, 7vw, 76px); line-height: .9; font-weight: 820; letter-spacing: -.07em; }
     .temp { color: var(--orange); }
     .humidity { color: var(--blue); }
     .muted { color: var(--muted); }
-    .climate-card { grid-column: 1 / -1; display: grid; gap: 22px; }
+    .ac-card { grid-column: span 6; display: grid; gap: 18px; }
+    .climate-card { grid-column: span 6; display: grid; gap: 18px; }
     .card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .state-pill { padding: 6px 10px; border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 13px; font-weight: 800; }
     .state-pill.on { color: var(--green); background: color-mix(in srgb, var(--green) 13%, transparent); }
-    .controls { display: grid; grid-template-columns: .75fr 1.25fr; gap: 16px; }
-    .power-control, .temperature-control { min-height: 170px; border-radius: 20px; background: var(--surface); padding: 18px; }
+    .controls { display: grid; grid-template-columns: .8fr 1.2fr; gap: 12px; }
+    .power-control, .temperature-control { min-height: 154px; border-radius: 18px; background: var(--surface); padding: 16px; }
     .power-control { display: grid; gap: 12px; }
     .temperature-control { display: grid; grid-template-columns: 56px 1fr 56px; align-items: center; gap: 12px; }
     .setpoint { text-align: center; }
     .setpoint strong { display: block; font-size: clamp(48px, 7vw, 72px); line-height: .95; letter-spacing: -.07em; }
     .setpoint span { display: block; margin-top: 8px; color: var(--muted); font-size: 13px; }
-    .automation-panel {
-      display: grid; grid-template-columns: 1.2fr 1fr; gap: 18px;
-      padding: 18px; border: 1px solid var(--line); border-radius: 20px;
-      background: color-mix(in srgb, var(--blue) 5%, var(--surface));
-    }
+    .automation-panel { display: grid; gap: 16px; }
     .automation-state { display: flex; align-items: flex-start; gap: 12px; }
     .automation-dot { width: 11px; height: 11px; margin-top: 5px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 5px color-mix(in srgb, var(--muted) 12%, transparent); }
     .automation-state.cooling .automation-dot { background: var(--green); box-shadow: 0 0 0 5px color-mix(in srgb, var(--green) 14%, transparent); }
     .automation-state.sensor-unavailable .automation-dot { background: var(--red); box-shadow: 0 0 0 5px color-mix(in srgb, var(--red) 14%, transparent); }
     .automation-title { font-size: 20px; font-weight: 850; letter-spacing: -.03em; }
     .automation-detail { margin-top: 4px; color: var(--muted); font-size: 14px; }
-    .automation-values { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .automation-values { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
     .automation-value { padding: 10px; border-radius: 14px; background: var(--card); }
     .automation-value span { display: block; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
     .automation-value strong { display: block; margin-top: 4px; font-size: 17px; }
+    .automation-value.next { grid-column: 1 / -1; }
     .manual-hint { margin: 0; font-size: 13px; }
+    .toggle { width: 48px; height: 28px; padding: 3px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); }
+    .toggle::after { content: ""; display: block; width: 20px; height: 20px; border-radius: 50%; background: var(--muted); transition: transform .2s ease, background .2s ease; }
+    .toggle.on { background: var(--blue); }
+    .toggle.on::after { background: white; transform: translateX(19px); }
+    .sync-local { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .sync-actions { display: flex; gap: 7px; }
+    .sync-actions button { padding: 7px 11px; border: 1px solid var(--line); background: transparent; font-size: 12px; }
+    .feedback { min-height: 20px; margin: 0; font-size: 13px; }
+    .feedback.error { color: var(--red); }
+    .feedback.success { color: var(--green); }
     button {
       border: 0; border-radius: 14px; padding: 11px 12px; font: inherit;
       font-weight: 800; color: var(--text); background: var(--surface); cursor: pointer;
@@ -553,23 +611,40 @@ DASHBOARD_HTML = """
     .legend .temp-line { background: var(--orange); }
     .legend .humidity-line { background: var(--blue); }
     select { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; color: var(--text); background: var(--surface); }
-    canvas { width: 100%; height: 280px; display: block; }
+    .chart-wrap { position: relative; margin-top: 10px; }
+    canvas { width: 100%; height: 320px; display: block; touch-action: pan-y; }
+    .chart-tooltip { position: absolute; z-index: 3; min-width: 180px; padding: 11px 13px; border-radius: 12px; color: #f8fafc; background: #172033; box-shadow: 0 14px 35px rgba(0,0,0,.28); pointer-events: none; transform: translate(-50%, calc(-100% - 14px)); font-size: 12px; line-height: 1.45; }
+    .chart-tooltip strong { display: block; font-size: 13px; }
+    .chart-tooltip[hidden] { display: none; }
     .events { grid-column: 1 / -1; }
-    .events h2 { margin-bottom: 12px; }
+    .events-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+    .event-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+    .filter { padding: 6px 10px; border: 1px solid var(--line); background: transparent; font-size: 12px; }
+    .filter.active { color: var(--blue); border-color: var(--blue); background: color-mix(in srgb, var(--blue) 9%, transparent); }
     .event { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+    .event-main { display: flex; align-items: center; gap: 10px; }
+    .event-marker { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--muted); }
+    .event-marker.automatic { background: var(--blue); }
+    .event-marker.manual { background: var(--orange); }
+    .event-marker.errors { background: var(--red); }
     .event span:last-child { color: var(--muted); white-space: nowrap; }
     @media (max-width: 820px) {
-      .controls, .automation-panel { grid-template-columns: 1fr; }
+      .hero-card { grid-column: span 12; }
+      .metric-card { grid-column: span 6; }
+      .ac-card, .climate-card { grid-column: span 12; }
     }
     @media (max-width: 620px) {
       main { width: min(100% - 20px, 1160px); padding-top: 16px; }
       .grid { grid-template-columns: 1fr; gap: 10px; }
-      .metric-card, .climate-card, .chart-card, .events { grid-column: 1; }
+      .hero-card, .metric-card, .ac-card, .climate-card, .chart-card, .events { grid-column: 1; }
       .card { border-radius: 20px; padding: 18px; }
       .status-bar { align-items: flex-start; flex-direction: column; }
       .settings-link { font-size: 0; }
       .settings-link::after { content: "Settings"; font-size: 14px; }
       .chart-tools { align-items: flex-start; flex-direction: column; }
+      .status-bar { flex-wrap: wrap; }
+      .status-spacer { display: none; }
+      .events-heading { align-items: flex-start; flex-direction: column; }
       .temperature-control { grid-template-columns: 50px 1fr 50px; }
       .step-button { width: 50px; height: 50px; }
     }
@@ -590,14 +665,22 @@ DASHBOARD_HTML = """
 
   <section class="status-bar">
     <div><span id="dot" class="dot"></span> <strong id="status">Starting</strong> <span id="detail" class="muted"></span></div>
-    <div id="updated" class="muted">Last update —</div>
+    <span class="status-spacer"></span>
+    <div id="timezone" class="muted">Local time</div>
+    <div id="updated" class="muted">Updated —</div>
   </section>
 
   <section class="grid">
+    <div class="card hero-card">
+      <div class="eyebrow">Current climate</div>
+      <h2 id="heroTitle" class="hero-title">Starting LocalAIR</h2>
+      <p id="heroSummary" class="hero-summary">Waiting for a room reading</p>
+      <p id="heroDetail" class="hero-detail">Climate schedule loading</p>
+    </div>
     <div class="card metric-card">
       <div class="eyebrow">Room temperature</div>
       <div id="temperature" class="metric temp">--.-°C</div>
-      <div class="muted">Measured by the Tuya sensor</div>
+      <div class="muted">Current room temperature</div>
     </div>
     <div class="card metric-card">
       <div class="eyebrow">Relative humidity</div>
@@ -605,7 +688,7 @@ DASHBOARD_HTML = """
       <div class="muted">Current room humidity</div>
     </div>
 
-    <div class="card climate-card">
+    <div class="card ac-card">
       <div class="card-heading">
         <div><div class="eyebrow">Olimpia Splendid</div><h2>PIU14 controls</h2></div>
         <span id="powerState" class="state-pill">Unknown</span>
@@ -621,6 +704,22 @@ DASHBOARD_HTML = """
           <button id="tempUp" class="step-button" aria-label="Increase target temperature" onclick="sendIR('temp_up')">+</button>
         </div>
       </div>
+      <p id="manualHint" class="manual-hint muted"></p>
+      <p id="lastResult" class="feedback" aria-live="polite"></p>
+      <div class="sync-local">
+        <div><strong>Correct assumed state</strong><div class="muted">Local only — does not send an AC command</div></div>
+        <div class="sync-actions">
+          <button type="button" onclick="syncPower('on')">Set as On</button>
+          <button type="button" onclick="syncPower('off')">Set as Off</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card climate-card">
+      <div class="card-heading">
+        <div><div class="eyebrow">Automatic control</div><h2>Climate control</h2></div>
+        <button id="climateToggle" class="toggle" type="button" aria-label="Toggle climate control" aria-pressed="false" onclick="toggleClimate()"></button>
+      </div>
       <div class="automation-panel">
         <div id="automationState" class="automation-state">
           <span class="automation-dot"></span>
@@ -632,13 +731,12 @@ DASHBOARD_HTML = """
         </div>
         <div class="automation-values">
           <div class="automation-value"><span>Schedule</span><strong id="scheduleValue">--</strong></div>
-          <div class="automation-value"><span>Cooling band</span><strong id="bandValue">--</strong></div>
+          <div class="automation-value"><span>Turn on at</span><strong id="onValue">--</strong></div>
+          <div class="automation-value"><span>Turn off at</span><strong id="offValue">--</strong></div>
           <div class="automation-value"><span>AC setting</span><strong id="climateSetpoint">--</strong></div>
+          <div class="automation-value next"><span>Next action</span><strong id="nextAction">--</strong></div>
         </div>
       </div>
-      <p id="manualHint" class="manual-hint muted"></p>
-      <p id="lastResult" class="muted" aria-live="polite"></p>
-      <button class="sync" title="Correct LocalAIR's power state without sending a command" onclick="syncPower()">Power state incorrect? Sync it locally</button>
     </div>
 
     <div class="card chart-card">
@@ -650,17 +748,28 @@ DASHBOARD_HTML = """
             <span><i class="humidity-line"></i>Humidity</span>
           </div>
           <select id="range" onchange="loadHistory()">
-            <option value="24h" selected>Daily</option>
-            <option value="7d">Weekly</option>
-            <option value="31d">Monthly</option>
+            <option value="24h" selected>24 hours</option>
+            <option value="7d">7 days</option>
+            <option value="30d">30 days</option>
           </select>
         </div>
       </div>
-      <canvas id="chart" width="1100" height="270"></canvas>
+      <div class="chart-wrap">
+        <canvas id="chart" width="1100" height="320" aria-label="Temperature, humidity, and AC activity history"></canvas>
+        <div id="chartTooltip" class="chart-tooltip" role="tooltip" hidden></div>
+      </div>
     </div>
 
     <div class="card events">
-      <h2>Recent activity</h2>
+      <div class="events-heading">
+        <h2>Recent activity</h2>
+        <div class="event-filters" aria-label="Activity filters">
+          <button class="filter active" data-filter="all" onclick="setEventFilter('all')">All events</button>
+          <button class="filter" data-filter="automatic" onclick="setEventFilter('automatic')">Automatic</button>
+          <button class="filter" data-filter="manual" onclick="setEventFilter('manual')">Manual</button>
+          <button class="filter" data-filter="errors" onclick="setEventFilter('errors')">Errors</button>
+        </div>
+      </div>
       <div id="events" class="muted">No events yet.</div>
     </div>
   </section>
@@ -669,8 +778,13 @@ DASHBOARD_HTML = """
 <script>
 const labels = {
   power: "Power", temp_down: "Temp −", temp_up: "Temp +",
+  power_on: "Power turned on", power_off: "Power turned off",
   climate_on: "Cooling started", climate_off: "Cooling stopped"
 };
+let latestStatus = null;
+let latestEvents = [];
+let eventFilter = "all";
+let chartMarkers = [];
 
 // Convert stored state values into compact UI labels.
 function title(value) {
@@ -698,27 +812,85 @@ function formatDateTime(value) {
   });
 }
 
+// Format a configured HH:MM value in the viewer's locale.
+function formatClock(value) {
+  const [hour, minute] = value.split(":").map(Number);
+  const date = new Date();
+  date.setHours(hour, minute, 0, 0);
+  return date.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+}
+
 // Turn stored device and control events into readable activity text.
 function eventText(event) {
   if (event.kind === "device") {
     const detail = event.error_message ? ` — ${event.error_message}` : "";
     return `Device · ${event.status || "Status"}${detail}`;
   }
-  const command = event.command ? labels[event.command] || title(event.command) : event.nec_hex || "Unknown IR";
+  const command = event.command?.startsWith("temperature_")
+    ? `Target set to ${event.command.split("_")[1]}°C`
+    : event.command ? labels[event.command] || title(event.command) : event.nec_hex || "Unknown IR";
   return `${sourceTitle(event.source)} AC · ${command}`;
+}
+
+// Classify activity for dashboard filters and marker colors.
+function eventCategory(event) {
+  if (event.kind === "device") return "errors";
+  return event.source === "climate" ? "automatic" : "manual";
+}
+
+// Render the selected recent-activity category.
+function renderEvents() {
+  const events = latestEvents.filter(event =>
+    eventFilter === "all" || eventCategory(event) === eventFilter
+  );
+  document.getElementById("events").innerHTML = events.length
+    ? events.map(event => {
+        const category = eventCategory(event);
+        return `<div class="event"><span class="event-main"><i class="event-marker ${category}"></i>${escapeHtml(eventText(event))}</span><span>${formatDateTime(event.timestamp)}</span></div>`;
+      }).join("")
+    : "No matching activity.";
+}
+
+// Select an activity filter without fetching the status again.
+function setEventFilter(filter) {
+  eventFilter = filter;
+  document.querySelectorAll(".filter").forEach(button =>
+    button.classList.toggle("active", button.dataset.filter === filter)
+  );
+  renderEvents();
 }
 
 // Refresh readings, controls, and activity from the current service snapshot.
 async function refreshStatus() {
   const data = await fetch("/api/status").then(r => r.json());
+  latestStatus = data;
   document.getElementById("status").textContent = data.reading.status;
   document.getElementById("detail").textContent = `· ${data.device.ip_address}`;
-  document.getElementById("updated").textContent = `Last update ${new Date(data.reading.timestamp).toLocaleTimeString()}`;
+  document.getElementById("timezone").textContent = data.device.timezone;
+  document.getElementById("updated").textContent = `Updated ${new Date(data.reading.timestamp).toLocaleTimeString()}`;
   const dot = document.getElementById("dot");
   dot.className = data.reading.ok ? "dot ok" : (data.reading.status === "Error" ? "dot error" : "dot");
 
   document.getElementById("temperature").textContent = data.reading.temperature_c == null ? "--.-°C" : `${data.reading.temperature_c.toFixed(1)}°C`;
   document.getElementById("humidity").textContent = data.reading.humidity_percent == null ? "--%" : `${data.reading.humidity_percent}%`;
+
+  const room = data.reading.temperature_c == null
+    ? "Room temperature unavailable"
+    : `Room ${data.reading.temperature_c.toFixed(1)}°C · Target band ${data.climate.turn_off_at}–${data.climate.turn_on_at}°C`;
+  const heroTitle = !data.reading.ok
+    ? "Sensor unavailable"
+    : !data.climate.enabled
+      ? "Manual control"
+      : data.climate.status === "Cooling"
+        ? "Cooling now"
+        : data.climate.status;
+  document.getElementById("heroTitle").textContent = heroTitle;
+  document.getElementById("heroSummary").textContent = room;
+  document.getElementById("heroDetail").textContent = data.climate.enabled
+    ? data.climate.status === "Outside schedule"
+      ? `Scheduled ${formatClock(data.climate.start_time)}–${formatClock(data.climate.end_time)}`
+      : `Scheduled until ${formatClock(data.climate.end_time)}`
+    : "Automatic climate control is disabled";
 
   const power = data.ac_state.power || "unknown";
   const powerBox = document.getElementById("powerState");
@@ -738,40 +910,78 @@ async function refreshStatus() {
     ? "Climate control may override manual changes at the next threshold."
     : "Manual controls are available.";
 
+  const climateToggle = document.getElementById("climateToggle");
+  climateToggle.classList.toggle("on", data.climate.enabled);
+  climateToggle.setAttribute("aria-pressed", data.climate.enabled);
+  climateToggle.setAttribute("aria-label", `${data.climate.enabled ? "Disable" : "Enable"} climate control`);
+
   const climateClass = data.climate.status.toLowerCase().replaceAll(" ", "-");
   document.getElementById("automationState").className = `automation-state ${climateClass}`;
   document.getElementById("automationTitle").textContent = data.climate.status;
   document.getElementById("automationDetail").textContent = data.climate.detail;
   document.getElementById("scheduleValue").textContent =
-    `${data.climate.start_time}–${data.climate.end_time}`;
-  document.getElementById("bandValue").textContent =
-    `${data.climate.turn_off_at}–${data.climate.turn_on_at}°`;
+    `${formatClock(data.climate.start_time)}–${formatClock(data.climate.end_time)}`;
+  document.getElementById("onValue").textContent = `${data.climate.turn_on_at}°C`;
+  document.getElementById("offValue").textContent = `${data.climate.turn_off_at}°C`;
   document.getElementById("climateSetpoint").textContent =
-    `${data.climate.aircon_temperature}°`;
+    `${data.climate.aircon_temperature}°C`;
+  document.getElementById("nextAction").textContent = !data.climate.enabled
+    ? "Enable automation to begin"
+    : data.climate.status === "Cooling"
+      ? `Cooling stops at ${data.climate.turn_off_at}°C`
+      : data.climate.status === "Outside schedule"
+        ? `Schedule starts at ${formatClock(data.climate.start_time)}`
+        : data.climate.status === "Sensor unavailable"
+          ? "Waiting for a valid sensor reading"
+          : `Cooling starts at ${data.climate.turn_on_at}°C`;
 
-  document.getElementById("lastResult").textContent = data.last_result ? data.last_result.message : "";
-  document.getElementById("events").innerHTML = data.events.length
-    ? data.events.map(e => `<div class="event"><span>${escapeHtml(eventText(e))}</span><span>${formatDateTime(e.timestamp)}</span></div>`).join("")
-    : "No events yet.";
+  const feedback = document.getElementById("lastResult");
+  feedback.textContent = data.last_result ? data.last_result.message : "";
+  feedback.className = `feedback ${data.last_result ? (data.last_result.ok ? "success" : "error") : ""}`;
+  latestEvents = data.events;
+  renderEvents();
 }
 
-// Queue one PIU14 cloud control and then refresh its assumed state.
+// Send one PIU14 command and expose progress or failure immediately.
 async function sendIR(command) {
-  await fetch(`/api/ir/${command}`, {method: "POST"});
-  setTimeout(refreshStatus, 500);
+  const button = document.getElementById({power: "powerButton", temp_down: "tempDown", temp_up: "tempUp"}[command]);
+  const feedback = document.getElementById("lastResult");
+  button.disabled = true;
+  feedback.className = "feedback";
+  feedback.textContent = command === "power" ? "Sending power command…" : "Changing temperature…";
+  try {
+    const response = await fetch(`/api/ir/${command}`, {method: "POST"});
+    const result = await response.json();
+    feedback.className = `feedback ${response.ok ? "success" : "error"}`;
+    feedback.textContent = result.message || result.detail || "Command failed.";
+  } catch (_error) {
+    feedback.className = "feedback error";
+    feedback.textContent = "LocalAIR could not be reached.";
+  }
+  await refreshStatus();
 }
 
-// Correct the locally assumed power state without operating the AC.
-async function syncPower() {
-  await fetch("/api/sync/power", {method: "POST"});
-  refreshStatus();
+// Set the locally assumed power state without operating the AC.
+async function syncPower(power) {
+  await fetch(`/api/sync/power/${power}`, {method: "POST"});
+  await refreshStatus();
+}
+
+// Enable or disable climate automation from the dashboard.
+async function toggleClimate() {
+  const enabled = latestStatus?.climate.enabled;
+  const toggle = document.getElementById("climateToggle");
+  toggle.disabled = true;
+  await fetch(`/api/climate/${enabled ? "off" : "on"}`, {method: "POST"});
+  await refreshStatus();
+  toggle.disabled = false;
 }
 
 // Load the selected history window and redraw its chart.
 async function loadHistory() {
   const range = document.getElementById("range").value;
   const data = await fetch(`/api/history?range=${range}`).then(r => r.json());
-  drawChart(data.points, range);
+  drawChart(data.points, range, data.events);
 }
 
 // Toggle and persist the light or dark appearance.
@@ -784,14 +994,15 @@ function toggleTheme() {
   loadHistory();
 }
 
-// Render responsive temperature and humidity history lines.
-function drawChart(points, range) {
+// Render responsive readings, thresholds, and AC activity markers.
+function drawChart(points, range, events = []) {
   const canvas = document.getElementById("chart");
   const w = canvas.clientWidth || 1100;
   const h = canvas.clientHeight || 270;
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d");
+  chartMarkers = [];
   ctx.clearRect(0, 0, w, h);
   const styles = getComputedStyle(document.documentElement);
   const muted = styles.getPropertyValue("--muted").trim();
@@ -809,11 +1020,16 @@ function drawChart(points, range) {
 
   const temps = points.map(p => p.temperature_c);
   const humidity = points.map(p => p.humidity_percent);
-  const tempScale = axisScale(Math.min(...temps), Math.max(...temps), 1, "temperature");
-  const humidityScale = axisScale(Math.min(...humidity), Math.max(...humidity), 5, "humidity");
+  const thresholds = latestStatus
+    ? [latestStatus.climate.turn_off_at, latestStatus.climate.turn_on_at]
+    : [];
+  const scaleTemps = [...temps, ...thresholds];
+  const tempScale = axisScale(Math.min(...scaleTemps), Math.max(...scaleTemps), 1, "temperature");
+  const humidityScale = axisScale(Math.min(...humidity), Math.max(...humidity), 10, "humidity");
   const dates = points.map(p => new Date(p.timestamp));
-  const startTime = dates[0].getTime();
-  const endTime = dates[dates.length - 1].getTime();
+  const endTime = Date.now();
+  const duration = {"24h": 86400000, "7d": 604800000, "30d": 2592000000}[range] || 86400000;
+  const startTime = endTime - duration;
   const timeSpan = Math.max(1, endTime - startTime);
 
   drawAxes();
@@ -823,8 +1039,9 @@ function drawChart(points, range) {
     drawPoint(points[0].humidity_percent, humidityScale.min, humidityScale.max, blue, left + gw / 2 + 12);
   } else {
     drawLine(points.map(p => p.temperature_c), tempScale.min, tempScale.max, orange, false);
-    drawLine(points.map(p => p.humidity_percent), humidityScale.min, humidityScale.max, blue, true);
+    drawLine(points.map(p => p.humidity_percent), humidityScale.min, humidityScale.max, blue, false);
   }
+  drawEventMarkers(events);
 
   // Calculate a readable axis range for one metric.
   function axisScale(minValue, maxValue, preferredStep, kind) {
@@ -890,7 +1107,12 @@ function drawChart(points, range) {
     ctx.textBaseline = "top";
     ctx.fillStyle = muted;
     ctx.strokeStyle = gridLine;
-    for (const tick of timeTicks(range, dates[0], dates[dates.length - 1])) {
+    if (latestStatus) {
+      drawThreshold(latestStatus.climate.turn_on_at, "Cooling starts", orange);
+      drawThreshold(latestStatus.climate.turn_off_at, "Cooling stops", blue);
+    }
+
+    for (const tick of timeTicks(range, new Date(startTime), new Date(endTime))) {
       const x = xFor(tick.date);
       ctx.beginPath();
       ctx.moveTo(x, top);
@@ -901,11 +1123,30 @@ function drawChart(points, range) {
     }
   }
 
+  // Draw one configured climate boundary across the temperature plot.
+  function drawThreshold(value, label, color) {
+    const y = yFor(value, tempScale.min, tempScale.max);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = .65;
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath();
+    ctx.moveTo(left, y);
+    ctx.lineTo(left + gw, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = color;
+    ctx.textAlign = "left";
+    ctx.fillText(`${value}°C  ${label}`, left + 8, y - 10);
+    ctx.restore();
+  }
+
   // Choose evenly spaced time labels for the selected history window.
   function timeTicks(range, start, end) {
     const ticks = [];
     const startMs = start.getTime(), endMs = end.getTime();
-    const stepMinutes = { "24h": 180, "7d": 1440, "31d": 10080 }[range] || 180;
+    const stepMinutes = { "24h": 180, "7d": 1440, "30d": 10080 }[range] || 180;
     const stepMs = stepMinutes * 60 * 1000;
     const first = Math.ceil(startMs / stepMs) * stepMs;
 
@@ -923,7 +1164,7 @@ function drawChart(points, range) {
 
   // Format a chart time label for short or long ranges.
   function timeLabel(date, range) {
-    if (range === "7d" || range === "31d") {
+    if (range === "7d" || range === "30d") {
       return date.toLocaleDateString([], {month: "short", day: "numeric"});
     }
     return date.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
@@ -972,6 +1213,55 @@ function drawChart(points, range) {
     ctx.arc(x, y, 6, 0, Math.PI * 2);
     ctx.fill();
   }
+
+  // Place successful automatic and manual AC actions on the temperature line.
+  function drawEventMarkers(activity) {
+    chartMarkers = [];
+    for (const event of activity) {
+      const eventDate = new Date(event.timestamp);
+      const eventTime = eventDate.getTime();
+      if (eventTime < startTime || eventTime > endTime) continue;
+      let nearest = 0;
+      for (let i = 1; i < dates.length; i++) {
+        if (Math.abs(dates[i] - eventTime) < Math.abs(dates[nearest] - eventTime)) nearest = i;
+      }
+      const x = xFor(eventDate);
+      const y = yFor(points[nearest].temperature_c, tempScale.min, tempScale.max);
+      const color = event.source === "climate" ? blue : orange;
+      ctx.fillStyle = "white";
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, 5.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      chartMarkers.push({x, y, event, temperature: points[nearest].temperature_c});
+    }
+  }
+}
+
+// Show details for the closest AC action marker on hover or touch.
+function showChartTooltip(pointer) {
+  const canvas = document.getElementById("chart");
+  const tooltip = document.getElementById("chartTooltip");
+  const rect = canvas.getBoundingClientRect();
+  const x = pointer.clientX - rect.left;
+  const y = pointer.clientY - rect.top;
+  const marker = chartMarkers.find(item => Math.hypot(item.x - x, item.y - y) <= 12);
+  if (!marker) {
+    tooltip.hidden = true;
+    canvas.style.cursor = "default";
+    return;
+  }
+  const action = marker.event.command?.startsWith("temperature_")
+    ? `Target set to ${marker.event.command.split("_")[1]}°C`
+    : labels[marker.event.command] || title(marker.event.command);
+  const source = marker.event.source === "climate" ? "Automatic climate control" : "Manual control";
+  tooltip.innerHTML = `<strong>${escapeHtml(action)}</strong>${marker.temperature.toFixed(1)}°C<br>${new Date(marker.event.timestamp).toLocaleTimeString()}<br>${source}`;
+  tooltip.style.left = `${Math.max(100, Math.min(rect.width - 100, marker.x))}px`;
+  tooltip.style.top = `${marker.y}px`;
+  tooltip.hidden = false;
+  canvas.style.cursor = "pointer";
 }
 
 document.getElementById("themeToggle").textContent =
@@ -979,6 +1269,10 @@ document.getElementById("themeToggle").textContent =
 document.getElementById("themeToggle").setAttribute(
   "aria-pressed", document.documentElement.dataset.theme === "dark"
 );
+document.getElementById("chart").addEventListener("pointermove", showChartTooltip);
+document.getElementById("chart").addEventListener("pointerleave", () => {
+  document.getElementById("chartTooltip").hidden = true;
+});
 refreshStatus();
 loadHistory();
 setInterval(refreshStatus, 3000);

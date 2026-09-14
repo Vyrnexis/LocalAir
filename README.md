@@ -428,8 +428,8 @@ Settings page:
 
 ## AC state behavior
 
-LocalAIR sends the PIU14 virtual remote's `PowerOn`, `PowerOff`, and direct
-16–30 °C `T` commands through Tuya cloud. Because IR is one-way, LocalAIR
+LocalAIR sends `power` and direct 16–30 °C `temp` commands through Tuya's
+infrared air-conditioner API. Because IR is one-way, LocalAIR
 tracks an assumed state. It updates that state when:
 
 - LocalAIR successfully sends an AC command

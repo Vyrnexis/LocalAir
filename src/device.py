@@ -192,14 +192,14 @@ class TuyaDevice:
     def set_climate(self, config: AppConfig, turn_on: bool) -> CommandResult:
         if turn_on:
             instructions = [
-                {"code": "T", "value": config.aircon_temperature},
-                {"code": "PowerOn", "value": "PowerOn"},
+                {"code": "temp", "value": config.aircon_temperature},
+                {"code": "power", "value": 1},
             ]
             message = (
                 f"Climate control cooling at {config.aircon_temperature}°C."
             )
         else:
-            instructions = [{"code": "PowerOff", "value": "PowerOff"}]
+            instructions = [{"code": "power", "value": 0}]
             message = "Climate control turned the AC off."
         return self._send_cloud(config, instructions, message)
 
@@ -229,12 +229,24 @@ class TuyaDevice:
                 apiSecret=config.cloud_api_secret,
                 apiDeviceID=config.device_id,
             )
-            response = cloud.sendcommand(
-                config.aircon_device_id,
-                {"commands": instructions},
+            url = (
+                f"/v2.0/infrareds/{config.device_id}/air-conditioners/"
+                f"{config.aircon_device_id}/command"
             )
-            if not isinstance(response, dict) or not response.get("success"):
-                return CommandResult(False, "Tuya cloud rejected the command.")
+            for instruction in instructions:
+                response = cloud.cloudrequest(
+                    url,
+                    action="POST",
+                    post=instruction,
+                )
+                if (
+                    not isinstance(response, dict)
+                    or not response.get("success")
+                    or response.get("result") is False
+                ):
+                    return CommandResult(
+                        False, "Tuya cloud rejected the IR command."
+                    )
             return CommandResult(True, message)
         except ImportError:
             return CommandResult(False, "TinyTuya is not installed.")
@@ -250,9 +262,11 @@ class TuyaDevice:
     ) -> tuple[dict[str, Any], str]:
         if command == "power":
             turn_on = state.get("power") != "on"
-            value = "PowerOn" if turn_on else "PowerOff"
             power = "on" if turn_on else "off"
-            return {"code": value, "value": value}, f"Power turned {power}."
+            return {
+                "code": "power",
+                "value": 1 if turn_on else 0,
+            }, f"Power turned {power}."
         try:
             current = int(state["temperature"])
         except (KeyError, ValueError):
@@ -262,7 +276,7 @@ class TuyaDevice:
         change = 1 if command == "temp_up" else -1
         temperature = min(30, max(16, current + change))
         message = f"Temperature set to {temperature}°C."
-        return {"code": "T", "value": temperature}, message
+        return {"code": "temp", "value": temperature}, message
 
     @staticmethod
     def _nec_frame(address: int, command: int) -> int:

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from src.config import AppConfig, load_config, save_config
 from src.device import (
@@ -129,11 +129,9 @@ class DeviceTests(unittest.TestCase):
             "temp_up", {"temperature": "29"}
         )
 
-        self.assertEqual(
-            power, {"code": "PowerOn", "value": "PowerOn"}
-        )
+        self.assertEqual(power, {"code": "power", "value": 1})
         self.assertEqual(power_message, "Power turned on.")
-        self.assertEqual(temperature, {"code": "T", "value": 30})
+        self.assertEqual(temperature, {"code": "temp", "value": 30})
         self.assertEqual(temperature_message, "Temperature set to 30°C.")
 
     # Keep repeated temperature presses inside the PIU14's supported range.
@@ -222,21 +220,31 @@ class DeviceTests(unittest.TestCase):
             aircon_temperature=16,
         )
         with patch("tinytuya.Cloud") as cloud_class:
-            cloud_class.return_value.sendcommand.return_value = {
+            cloud_class.return_value.cloudrequest.return_value = {
                 "success": True
             }
 
             result = TuyaDevice().set_climate(config, True)
 
         self.assertTrue(result.ok)
-        cloud_class.return_value.sendcommand.assert_called_once_with(
-            "aircon",
-            {
-                "commands": [
-                    {"code": "T", "value": 16},
-                    {"code": "PowerOn", "value": "PowerOn"},
-                ]
-            },
+        url = (
+            f"/v2.0/infrareds/{config.device_id}/"
+            "air-conditioners/aircon/command"
+        )
+        self.assertEqual(
+            cloud_class.return_value.cloudrequest.call_args_list,
+            [
+                call(
+                    url,
+                    action="POST",
+                    post={"code": "temp", "value": 16},
+                ),
+                call(
+                    url,
+                    action="POST",
+                    post={"code": "power", "value": 1},
+                ),
+            ],
         )
 
 

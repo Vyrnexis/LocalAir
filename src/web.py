@@ -731,13 +731,12 @@ async function refreshStatus() {
   const powerButton = document.getElementById("powerButton");
   powerButton.textContent = power === "on" ? "Turn off" : "Turn on";
   powerButton.className = `power-button ${power}`;
-  const manualEnabled = !data.climate.enabled;
-  powerButton.disabled = !data.ir_commands.power || !manualEnabled;
-  document.getElementById("tempDown").disabled = !data.ir_commands.temp_down || !manualEnabled;
-  document.getElementById("tempUp").disabled = !data.ir_commands.temp_up || !manualEnabled;
+  powerButton.disabled = !data.ir_commands.power;
+  document.getElementById("tempDown").disabled = !data.ir_commands.temp_down;
+  document.getElementById("tempUp").disabled = !data.ir_commands.temp_up;
   document.getElementById("manualHint").textContent = data.climate.enabled
-    ? "Manual controls are locked while climate control is enabled."
-    : "Manual controls are available while climate control is disabled.";
+    ? "Climate control may override manual changes at the next threshold."
+    : "Manual controls are available.";
 
   const climateClass = data.climate.status.toLowerCase().replaceAll(" ", "-");
   document.getElementById("automationState").className = `automation-state ${climateClass}`;

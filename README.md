@@ -76,6 +76,20 @@ api_secret = "YOUR_TUYA_API_SECRET"
 aircon_device_id = "YOUR_VIRTUAL_AC_DEVICE_ID"
 ```
 
+Daily climate control is disabled until enabled in Settings. Its defaults cool
+at 24 °C, stop at 22 °C, and set the PIU14 to 16 °C between 10:00 and 16:00:
+
+```toml
+[climate]
+enabled = false
+start_time = "10:00"
+end_time = "16:00"
+turn_on_at = 24.0
+turn_off_at = 22.0
+aircon_temperature = 16
+sensor_timeout_seconds = 120
+```
+
 The web UI can edit settings after the app is running, but the first launch
 needs a valid `config.toml` mounted into the container.
 
@@ -311,6 +325,7 @@ The Settings page can update:
 - web host
 - web port
 - history retention days
+- climate-control enable switch, schedule, thresholds, and PIU14 setpoint
 
 Important:
 
@@ -350,6 +365,15 @@ api_key = "REPLACE_WITH_YOUR_TUYA_API_KEY"
 api_secret = "REPLACE_WITH_YOUR_TUYA_API_SECRET"
 aircon_device_id = "REPLACE_WITH_YOUR_VIRTUAL_AC_DEVICE_ID"
 
+[climate]
+enabled = false
+start_time = "10:00"
+end_time = "16:00"
+turn_on_at = 24.0
+turn_off_at = 22.0
+aircon_temperature = 16
+sensor_timeout_seconds = 120
+
 [server]
 host = "0.0.0.0"
 port = 8787
@@ -383,6 +407,7 @@ The dashboard includes:
 - large temperature and humidity cards
 - AC assumed state card
 - PIU14 power and temperature buttons
+- daily scheduled climate control with configurable hysteresis
 - Sync Power button
 - temperature/humidity history graph with Daily, Weekly, and Monthly views
 - recent activity list with IR events and device errors/disconnects
@@ -409,6 +434,10 @@ tracks an assumed state. It updates that state when:
 
 - LocalAIR successfully sends an AC command
 - you press Sync Power
+
+When climate control is enabled, LocalAIR turns cooling on at or above the
+configured upper threshold and off at or below the lower threshold. It always
+turns the AC off outside the daily schedule or when sensor data is stale.
 
 Unknown observed IR signals are logged to:
 

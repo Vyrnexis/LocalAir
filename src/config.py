@@ -6,6 +6,7 @@ import os
 import tempfile
 import tomllib
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 
 
@@ -21,6 +22,12 @@ DEFAULT_SERVER_PORT = 8787
 DEFAULT_HISTORY_RETENTION_DAYS = 31
 AC_STATE_KEYS = {"power", "mode", "temperature", "fan", "swing", "timer"}
 DEFAULT_AC_STATE = {"power": "off", "temperature": "24"}
+DEFAULT_CLIMATE_START = "10:00"
+DEFAULT_CLIMATE_END = "16:00"
+DEFAULT_TURN_ON_AT = 24.0
+DEFAULT_TURN_OFF_AT = 22.0
+DEFAULT_AIRCON_TEMPERATURE = 16
+DEFAULT_SENSOR_TIMEOUT_SECONDS = 120
 
 
 def data_path() -> Path | None:
@@ -54,6 +61,14 @@ def database_path() -> Path:
     return state_path() / "localair.db"
 
 
+# Normalize a schedule time and reject values outside the HH:MM format.
+def _normalise_time(value: str) -> str:
+    try:
+        return datetime.strptime(value.strip(), "%H:%M").strftime("%H:%M")
+    except ValueError:
+        raise ValueError("Schedule times must use HH:MM format.") from None
+
+
 @dataclass(frozen=True, slots=True)
 class AppConfig:
     ip_address: str = DEFAULT_IP_ADDRESS
@@ -70,6 +85,13 @@ class AppConfig:
     cloud_api_key: str = ""
     cloud_api_secret: str = ""
     aircon_device_id: str = ""
+    climate_enabled: bool = False
+    climate_start: str = DEFAULT_CLIMATE_START
+    climate_end: str = DEFAULT_CLIMATE_END
+    turn_on_at: float = DEFAULT_TURN_ON_AT
+    turn_off_at: float = DEFAULT_TURN_OFF_AT
+    aircon_temperature: int = DEFAULT_AIRCON_TEMPERATURE
+    sensor_timeout_seconds: int = DEFAULT_SENSOR_TIMEOUT_SECONDS
     server_host: str = DEFAULT_SERVER_HOST
     server_port: int = DEFAULT_SERVER_PORT
     history_retention_days: int = DEFAULT_HISTORY_RETENTION_DAYS
@@ -79,6 +101,8 @@ class AppConfig:
         device_id = self.device_id.strip()
         server_host = self.server_host.strip() or DEFAULT_SERVER_HOST
         cloud_region = self.cloud_region.strip().lower()
+        climate_start = _normalise_time(self.climate_start)
+        climate_end = _normalise_time(self.climate_end)
         if not ip:
             raise ValueError("IP address is required.")
         if not device_id:
@@ -103,6 +127,18 @@ class AppConfig:
             "sg",
         }:
             raise ValueError("Unknown Tuya cloud region.")
+        if climate_start >= climate_end:
+            raise ValueError("Schedule start must be before schedule end.")
+        if not -20 <= self.turn_off_at < self.turn_on_at <= 60:
+            raise ValueError(
+                "Cooling-off temperature must be below cooling-on temperature."
+            )
+        if not 16 <= self.aircon_temperature <= 30:
+            raise ValueError("Air-conditioner temperature must be 16–30°C.")
+        if not self.poll_interval_seconds <= self.sensor_timeout_seconds <= 86400:
+            raise ValueError(
+                "Sensor timeout must be at least the polling interval."
+            )
         if not 1 <= self.server_port <= 65535:
             raise ValueError("Server port must be between 1 and 65535.")
         if not 1 <= self.history_retention_days <= 365:
@@ -116,6 +152,8 @@ class AppConfig:
             cloud_api_key=self.cloud_api_key.strip(),
             cloud_api_secret=self.cloud_api_secret.strip(),
             aircon_device_id=self.aircon_device_id.strip(),
+            climate_start=climate_start,
+            climate_end=climate_end,
         )
 
 
@@ -132,6 +170,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         server = raw.get("server", {})
         history = raw.get("history", {})
         cloud = raw.get("tuya_cloud", {})
+        climate = raw.get("climate", {})
         if not isinstance(device, dict) or not isinstance(ir, dict):
             raise ValueError("Expected [device] and [ir] tables.")
         commands = ir.get("commands", {})
@@ -146,6 +185,13 @@ def load_config(path: Path | None = None) -> AppConfig:
             raise ValueError("Expected a [history] table.")
         if not isinstance(cloud, dict):
             raise ValueError("Expected a [tuya_cloud] table.")
+        if not isinstance(climate, dict):
+            raise ValueError("Expected a [climate] table.")
+        poll_interval = int(
+            device.get(
+                "poll_interval_seconds", DEFAULT_POLL_INTERVAL_SECONDS
+            )
+        )
         return AppConfig(
             ip_address=str(device.get("ip_address", DEFAULT_IP_ADDRESS)),
             device_id=str(device.get("device_id", DEFAULT_DEVICE_ID)),
@@ -153,11 +199,7 @@ def load_config(path: Path | None = None) -> AppConfig:
             protocol_version=float(
                 device.get("protocol_version", DEFAULT_PROTOCOL_VERSION)
             ),
-            poll_interval_seconds=int(
-                device.get(
-                    "poll_interval_seconds", DEFAULT_POLL_INTERVAL_SECONDS
-                )
-            ),
+            poll_interval_seconds=poll_interval,
             ir_address=int(ir.get("address", DEFAULT_IR_ADDRESS)),
             ir_commands={
                 str(name): int(command)
@@ -173,6 +215,26 @@ def load_config(path: Path | None = None) -> AppConfig:
             cloud_api_key=str(cloud.get("api_key", "")),
             cloud_api_secret=str(cloud.get("api_secret", "")),
             aircon_device_id=str(cloud.get("aircon_device_id", "")),
+            climate_enabled=bool(climate.get("enabled", False)),
+            climate_start=str(
+                climate.get("start_time", DEFAULT_CLIMATE_START)
+            ),
+            climate_end=str(climate.get("end_time", DEFAULT_CLIMATE_END)),
+            turn_on_at=float(climate.get("turn_on_at", DEFAULT_TURN_ON_AT)),
+            turn_off_at=float(
+                climate.get("turn_off_at", DEFAULT_TURN_OFF_AT)
+            ),
+            aircon_temperature=int(
+                climate.get(
+                    "aircon_temperature", DEFAULT_AIRCON_TEMPERATURE
+                )
+            ),
+            sensor_timeout_seconds=int(
+                climate.get(
+                    "sensor_timeout_seconds",
+                    max(DEFAULT_SENSOR_TIMEOUT_SECONDS, poll_interval),
+                )
+            ),
             server_host=str(server.get("host", DEFAULT_SERVER_HOST)),
             server_port=int(server.get("port", DEFAULT_SERVER_PORT)),
             history_retention_days=int(
@@ -212,6 +274,14 @@ def save_config(config: AppConfig, path: Path | None = None) -> Path:
         f"api_key = {_toml_string(config.cloud_api_key)}\n"
         f"api_secret = {_toml_string(config.cloud_api_secret)}\n"
         f"aircon_device_id = {_toml_string(config.aircon_device_id)}\n\n"
+        "[climate]\n"
+        f"enabled = {'true' if config.climate_enabled else 'false'}\n"
+        f"start_time = {_toml_string(config.climate_start)}\n"
+        f"end_time = {_toml_string(config.climate_end)}\n"
+        f"turn_on_at = {config.turn_on_at}\n"
+        f"turn_off_at = {config.turn_off_at}\n"
+        f"aircon_temperature = {config.aircon_temperature}\n"
+        f"sensor_timeout_seconds = {config.sensor_timeout_seconds}\n\n"
         "[server]\n"
         f"host = {_toml_string(config.server_host)}\n"
         f"port = {config.server_port}\n\n"

@@ -5,9 +5,16 @@ import tempfile
 import unittest
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from src.config import AppConfig, load_config, save_config
-from src.device import ConnectionStatus, TuyaDevice, update_ac_state
+from src.device import (
+    ConnectionStatus,
+    DeviceReading,
+    TuyaDevice,
+    decide_climate,
+    update_ac_state,
+)
 from src.storage import LocalAirStore
 
 
@@ -20,6 +27,13 @@ class ConfigTests(unittest.TestCase):
                 ir_address=0x08E7,
                 ir_commands={"power": 0x00},
                 ac_state={"power": "on", "mode": "heat"},
+                climate_enabled=True,
+                climate_start="09:30",
+                climate_end="15:45",
+                turn_on_at=25.0,
+                turn_off_at=21.5,
+                aircon_temperature=17,
+                sensor_timeout_seconds=180,
             )
 
             save_config(expected, path)
@@ -163,6 +177,68 @@ class DeviceTests(unittest.TestCase):
     def test_unknown_toggle_state_remains_unknown(self) -> None:
         self.assertEqual(update_ac_state({}, "power"), {})
 
+    # Enforce schedule, hysteresis, and stale-sensor fail-safe decisions.
+    def test_climate_control_decisions(self) -> None:
+        config = AppConfig(climate_enabled=True)
+        midday = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+
+        hot = DeviceReading(24.0, 40, midday, ConnectionStatus.CONNECTED)
+        cool = DeviceReading(22.0, 40, midday, ConnectionStatus.CONNECTED)
+        stale = DeviceReading(
+            25.0,
+            40,
+            midday - timedelta(seconds=121),
+            ConnectionStatus.CONNECTED,
+        )
+
+        self.assertEqual(
+            decide_climate(config, hot, "off", midday).desired_power,
+            "on",
+        )
+        self.assertEqual(
+            decide_climate(config, cool, "on", midday).desired_power,
+            "off",
+        )
+        self.assertEqual(
+            decide_climate(config, stale, "on", midday).status,
+            "Sensor unavailable",
+        )
+        self.assertEqual(
+            decide_climate(
+                config,
+                hot,
+                "on",
+                midday.replace(hour=16),
+            ).desired_power,
+            "off",
+        )
+
+    # Send the setpoint before explicit power-on through the virtual AC.
+    def test_climate_on_sends_setpoint_and_power(self) -> None:
+        config = AppConfig(
+            cloud_api_key="key",
+            cloud_api_secret="secret",
+            aircon_device_id="aircon",
+            aircon_temperature=16,
+        )
+        with patch("tinytuya.Cloud") as cloud_class:
+            cloud_class.return_value.sendcommand.return_value = {
+                "success": True
+            }
+
+            result = TuyaDevice().set_climate(config, True)
+
+        self.assertTrue(result.ok)
+        cloud_class.return_value.sendcommand.assert_called_once_with(
+            "aircon",
+            {
+                "commands": [
+                    {"code": "T", "value": 16},
+                    {"code": "PowerOn", "value": "PowerOn"},
+                ]
+            },
+        )
+
 
 class WebUiTests(unittest.TestCase):
     # Keep the dependency-free dashboard focused on PIU14 and its requested UI.
@@ -179,6 +255,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('id="tempUp"', dashboard)
         self.assertIn('data-theme="dark"', dashboard)
         self.assertIn("quadraticCurveTo", dashboard)
+        self.assertIn('id="automationState"', dashboard)
         self.assertNotIn("mode_heat", dashboard)
 
 

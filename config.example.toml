@@ -12,6 +12,15 @@ api_key = "REPLACE_WITH_YOUR_TUYA_API_KEY"
 api_secret = "REPLACE_WITH_YOUR_TUYA_API_SECRET"
 aircon_device_id = "REPLACE_WITH_YOUR_VIRTUAL_AC_DEVICE_ID"
 
+[climate]
+enabled = false
+start_time = "10:00"
+end_time = "16:00"
+turn_on_at = 24.0
+turn_off_at = 22.0
+aircon_temperature = 16
+sensor_timeout_seconds = 120
+
 [server]
 host = "0.0.0.0"
 port = 8787

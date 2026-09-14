@@ -45,6 +45,66 @@ class CommandResult:
     message: str
 
 
+@dataclass(frozen=True, slots=True)
+class ClimateDecision:
+    status: str
+    detail: str
+    desired_power: str | None
+
+
+# Decide the required AC state from schedule, sensor freshness, and hysteresis.
+def decide_climate(
+    config: AppConfig,
+    reading: DeviceReading | None,
+    power: str,
+    now: datetime,
+) -> ClimateDecision:
+    if not config.climate_enabled:
+        return ClimateDecision("Disabled", "Automation is off.", None)
+
+    current_time = now.strftime("%H:%M")
+    schedule = f"{config.climate_start}–{config.climate_end}"
+    if not config.climate_start <= current_time < config.climate_end:
+        return ClimateDecision(
+            "Outside schedule", f"Active daily {schedule}.", "off"
+        )
+
+    if reading is None:
+        return ClimateDecision(
+            "Sensor unavailable", "Waiting for a valid reading.", "off"
+        )
+    age = max(0.0, (now - reading.timestamp).total_seconds())
+    if age > config.sensor_timeout_seconds:
+        return ClimateDecision(
+            "Sensor unavailable",
+            f"Last valid reading was {round(age)} seconds ago.",
+            "off",
+        )
+
+    temperature = reading.temperature_c
+    if temperature is None:
+        return ClimateDecision(
+            "Sensor unavailable", "Waiting for a valid reading.", "off"
+        )
+    if temperature >= config.turn_on_at:
+        return ClimateDecision(
+            "Cooling",
+            f"Room is at or above {config.turn_on_at:g}°C.",
+            "on",
+        )
+    if temperature <= config.turn_off_at:
+        return ClimateDecision(
+            "Holding",
+            f"Room reached {config.turn_off_at:g}°C or below.",
+            "off",
+        )
+    return ClimateDecision(
+        "Cooling" if power == "on" else "Holding",
+        f"Inside the {config.turn_off_at:g}–{config.turn_on_at:g}°C comfort band.",
+        "on" if power == "on" else "off",
+    )
+
+
 def update_ac_state(state: dict[str, str], command: str) -> dict[str, str]:
     """Apply an observed or transmitted remote command to assumed state."""
     updated = dict(state)
@@ -52,6 +112,10 @@ def update_ac_state(state: dict[str, str], command: str) -> dict[str, str]:
         current = updated.get("power")
         if current in {"on", "off"}:
             updated["power"] = "off" if current == "on" else "on"
+    elif command == "climate_on":
+        updated["power"] = "on"
+    elif command == "climate_off":
+        updated["power"] = "off"
     elif command.startswith("mode_"):
         updated["mode"] = command.removeprefix("mode_")
     elif command.startswith("fan_"):
@@ -116,6 +180,36 @@ class TuyaDevice:
     def send_ir(self, config: AppConfig, command: str) -> CommandResult:
         if command not in IR_COMMANDS:
             return CommandResult(False, "Unknown IR command.")
+        try:
+            instruction, message = self._cloud_instruction(
+                command, config.ac_state
+            )
+        except ValueError as exc:
+            return CommandResult(False, str(exc))
+        return self._send_cloud(config, [instruction], message)
+
+    # Send an explicit fail-safe power state for climate automation.
+    def set_climate(self, config: AppConfig, turn_on: bool) -> CommandResult:
+        if turn_on:
+            instructions = [
+                {"code": "T", "value": config.aircon_temperature},
+                {"code": "PowerOn", "value": "PowerOn"},
+            ]
+            message = (
+                f"Climate control cooling at {config.aircon_temperature}°C."
+            )
+        else:
+            instructions = [{"code": "PowerOff", "value": "PowerOff"}]
+            message = "Climate control turned the AC off."
+        return self._send_cloud(config, instructions, message)
+
+    # Send validated instructions through the configured Tuya cloud project.
+    @staticmethod
+    def _send_cloud(
+        config: AppConfig,
+        instructions: list[dict[str, Any]],
+        message: str,
+    ) -> CommandResult:
         if not all(
             (
                 config.cloud_api_key,
@@ -126,13 +220,9 @@ class TuyaDevice:
             return CommandResult(
                 False, "Open Settings and enter the Tuya cloud details."
             )
-
         try:
             import tinytuya
 
-            instruction, message = self._cloud_instruction(
-                command, config.ac_state
-            )
             cloud = tinytuya.Cloud(
                 apiRegion=config.cloud_region,
                 apiKey=config.cloud_api_key,
@@ -141,15 +231,13 @@ class TuyaDevice:
             )
             response = cloud.sendcommand(
                 config.aircon_device_id,
-                {"commands": [instruction]},
+                {"commands": instructions},
             )
             if not isinstance(response, dict) or not response.get("success"):
                 return CommandResult(False, "Tuya cloud rejected the command.")
             return CommandResult(True, message)
         except ImportError:
             return CommandResult(False, "TinyTuya is not installed.")
-        except ValueError as exc:
-            return CommandResult(False, str(exc))
         except Exception as exc:
             return CommandResult(
                 False, f"Could not send AC command ({type(exc).__name__})."
@@ -268,19 +356,17 @@ class TuyaDevice:
 
 
 class DeviceMonitor:
-    """Own the Tuya connection and serialize listening, polling, and sending."""
+    """Own the Tuya connection and serialize listening and sensor polling."""
 
     def __init__(
         self,
         config: AppConfig,
         on_reading,
         on_ir,
-        on_result,
     ) -> None:
         self.config = config
         self.on_reading = on_reading
         self.on_ir = on_ir
-        self.on_result = on_result
         self.actions: queue.Queue[tuple[str, str | None]] = queue.Queue()
         self.stop_event = threading.Event()
         self.last_unknown: tuple[str, float] | None = None
@@ -304,9 +390,6 @@ class DeviceMonitor:
 
     def refresh(self) -> None:
         self.actions.put(("refresh", None))
-
-    def send(self, command: str) -> None:
-        self.actions.put(("send", command))
 
     def _run(self) -> None:
         while not self.stop_event.is_set():
@@ -346,7 +429,7 @@ class DeviceMonitor:
         try:
             while not self.stop_event.is_set():
                 try:
-                    action, command = self.actions.get_nowait()
+                    action, _command = self.actions.get_nowait()
                 except queue.Empty:
                     action, command = "", None
 
@@ -354,14 +437,6 @@ class DeviceMonitor:
                     return
                 if action == "refresh":
                     next_poll = min(next_poll, time.monotonic() + 0.2)
-                elif action == "send" and command:
-                    device.study_end()
-                    result = TuyaDevice().send_ir(config, command)
-                    self.on_result(result)
-                    if result.ok:
-                        self.on_ir(command, "localair")
-                    self._start_learning(device)
-
                 if time.monotonic() >= next_poll:
                     if not self._poll_sensor(device, config):
                         return

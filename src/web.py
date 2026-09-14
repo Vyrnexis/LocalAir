@@ -7,6 +7,7 @@ from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 import threading
+import time
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -20,11 +21,14 @@ from fastapi.responses import (
 
 from .config import AppConfig, database_path, load_config, save_config
 from .device import (
+    ClimateDecision,
     CommandResult,
     ConnectionStatus,
     DeviceMonitor,
     DeviceReading,
     IR_COMMANDS,
+    TuyaDevice,
+    decide_climate,
     update_ac_state,
 )
 from .storage import LocalAirStore
@@ -52,18 +56,34 @@ class LocalAirService:
         )
         self.last_result: CommandResult | None = None
         self.last_ir: tuple[str, str] | None = None
+        self.last_valid_reading: DeviceReading | None = None
+        self.climate = ClimateDecision(
+            "Disabled", "Automation is off.", None
+        )
+        self.last_climate_attempt: tuple[str, float] | None = None
+        self.cloud_lock = threading.Lock()
+        self.climate_event = threading.Event()
+        self.stopping = False
+        self.climate_thread = threading.Thread(
+            target=self._climate_loop,
+            name="localair-climate",
+            daemon=True,
+        )
         self.monitor = DeviceMonitor(
             self.config,
             self._on_reading,
             self._on_ir,
-            self._on_result,
         )
 
     def start(self) -> None:
         self.monitor.start()
+        self.climate_thread.start()
         self.monitor.refresh()
 
     def stop(self) -> None:
+        self.stopping = True
+        self.climate_event.set()
+        self.climate_thread.join(timeout=3)
         self.monitor.stop()
 
     def snapshot(self) -> dict[str, Any]:
@@ -72,6 +92,7 @@ class LocalAirService:
             result = self.last_result
             config = self.config
             last_ir = self.last_ir
+            climate = self.climate
         cloud_ready = all(
             (
                 config.cloud_api_key,
@@ -94,6 +115,16 @@ class LocalAirService:
                 "error_message": reading.error_message,
             },
             "ac_state": dict(config.ac_state),
+            "climate": {
+                "enabled": config.climate_enabled,
+                "status": climate.status,
+                "detail": climate.detail,
+                "start_time": config.climate_start,
+                "end_time": config.climate_end,
+                "turn_on_at": config.turn_on_at,
+                "turn_off_at": config.turn_off_at,
+                "aircon_temperature": config.aircon_temperature,
+            },
             "ir_commands": {
                 name: cloud_ready
                 for name in sorted(IR_COMMANDS)
@@ -107,19 +138,17 @@ class LocalAirService:
             "events": self.store.recent_activity_events(),
         }
 
-    def send_ir(self, command: str) -> None:
+    def send_ir(self, command: str) -> CommandResult:
         if command not in IR_COMMANDS:
             raise ValueError("Unknown IR command.")
         with self.lock:
-            if not all(
-                (
-                    self.config.cloud_api_key,
-                    self.config.cloud_api_secret,
-                    self.config.aircon_device_id,
-                )
-            ):
-                raise ValueError("Tuya cloud details are incomplete.")
-        self.monitor.send(command)
+            config = self.config
+        with self.cloud_lock:
+            result = TuyaDevice().send_ir(config, command)
+        self._on_result(result)
+        if result.ok:
+            self._on_ir(command, "localair")
+        return result
 
     def sync_power(self) -> dict[str, str]:
         with self.lock:
@@ -159,6 +188,22 @@ class LocalAirService:
             aircon_device_id=data.get(
                 "aircon_device_id", current.aircon_device_id
             ),
+            climate_enabled=data.get("climate_enabled") == "on",
+            climate_start=data.get("climate_start", current.climate_start),
+            climate_end=data.get("climate_end", current.climate_end),
+            turn_on_at=float(data.get("turn_on_at", current.turn_on_at)),
+            turn_off_at=float(data.get("turn_off_at", current.turn_off_at)),
+            aircon_temperature=int(
+                data.get(
+                    "aircon_temperature", current.aircon_temperature
+                )
+            ),
+            sensor_timeout_seconds=int(
+                data.get(
+                    "sensor_timeout_seconds",
+                    current.sensor_timeout_seconds,
+                )
+            ),
             server_host=data.get("server_host", current.server_host),
             server_port=int(data.get("server_port", current.server_port)),
             history_retention_days=int(
@@ -172,18 +217,25 @@ class LocalAirService:
         with self.lock:
             self.config = config
             self.store.retention_days = config.history_retention_days
+            self.last_climate_attempt = None
         self.monitor.update_config(config)
         self.monitor.refresh()
+        self.climate_event.set()
 
     def _on_reading(self, reading: DeviceReading) -> None:
         with self.lock:
             self.latest_reading = reading
+            if reading.ok:
+                self.last_valid_reading = reading
         self.store.add_reading(reading)
 
     def _on_ir(self, command: str, source: str) -> None:
         self.store.add_ir_event(source, command)
         with self.lock:
-            state = update_ac_state(self.config.ac_state, command)
+            config = self.config
+            state = update_ac_state(config.ac_state, command)
+            if command == "climate_on":
+                state["temperature"] = str(config.aircon_temperature)
         self._save_state(state, f"ir:{command}")
         with self.lock:
             self.last_ir = (
@@ -194,6 +246,52 @@ class LocalAirService:
     def _on_result(self, result: CommandResult) -> None:
         with self.lock:
             self.last_result = result
+
+    # Evaluate schedule and sensor state every ten seconds or after settings change.
+    def _climate_loop(self) -> None:
+        while not self.stopping:
+            try:
+                self._evaluate_climate()
+            except Exception as exc:
+                self._on_result(
+                    CommandResult(
+                        False,
+                        f"Climate control failed ({type(exc).__name__}).",
+                    )
+                )
+            self.climate_event.wait(10)
+            self.climate_event.clear()
+
+    # Apply only state transitions and retry failed cloud commands after one minute.
+    def _evaluate_climate(self) -> None:
+        now = datetime.now().astimezone()
+        with self.lock:
+            config = self.config
+            reading = self.last_valid_reading
+            power = config.ac_state.get("power", "off")
+            last_attempt = self.last_climate_attempt
+        decision = decide_climate(config, reading, power, now)
+        with self.lock:
+            self.climate = decision
+        if decision.desired_power is None:
+            return
+
+        command = f"climate_{decision.desired_power}"
+        first_confirmation = last_attempt is None
+        if power == decision.desired_power and not first_confirmation:
+            return
+        if last_attempt and last_attempt[0] == command:
+            if time.monotonic() - last_attempt[1] < 60:
+                return
+        with self.lock:
+            self.last_climate_attempt = (command, time.monotonic())
+        with self.cloud_lock:
+            result = TuyaDevice().set_climate(
+                config, decision.desired_power == "on"
+            )
+        self._on_result(result)
+        if result.ok:
+            self._on_ir(command, "climate")
 
     def _save_state(self, state: dict[str, str], source: str) -> None:
         with self.lock:
@@ -255,6 +353,13 @@ def settings() -> str:
         history_retention_days=config.history_retention_days,
         cloud_region=html_escape(config.cloud_region),
         aircon_device_id=html_escape(config.aircon_device_id),
+        climate_enabled="checked" if config.climate_enabled else "",
+        climate_start=config.climate_start,
+        climate_end=config.climate_end,
+        turn_on_at=config.turn_on_at,
+        turn_off_at=config.turn_off_at,
+        aircon_temperature=config.aircon_temperature,
+        sensor_timeout_seconds=config.sensor_timeout_seconds,
     )
 
 
@@ -282,10 +387,10 @@ def api_history(range: str = "24h") -> JSONResponse:
 @app.post("/api/ir/{command}")
 def api_ir(command: str) -> JSONResponse:
     try:
-        get_service().send_ir(command)
+        result = get_service().send_ir(command)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    return JSONResponse({"ok": True, "message": "IR command queued."})
+    return JSONResponse(asdict(result), status_code=200 if result.ok else 502)
 
 
 @app.post("/api/sync/power")
@@ -411,6 +516,22 @@ DASHBOARD_HTML = """
     .setpoint { text-align: center; }
     .setpoint strong { display: block; font-size: clamp(48px, 7vw, 72px); line-height: .95; letter-spacing: -.07em; }
     .setpoint span { display: block; margin-top: 8px; color: var(--muted); font-size: 13px; }
+    .automation-panel {
+      display: grid; grid-template-columns: 1.2fr 1fr; gap: 18px;
+      padding: 18px; border: 1px solid var(--line); border-radius: 20px;
+      background: color-mix(in srgb, var(--blue) 5%, var(--surface));
+    }
+    .automation-state { display: flex; align-items: flex-start; gap: 12px; }
+    .automation-dot { width: 11px; height: 11px; margin-top: 5px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 5px color-mix(in srgb, var(--muted) 12%, transparent); }
+    .automation-state.cooling .automation-dot { background: var(--green); box-shadow: 0 0 0 5px color-mix(in srgb, var(--green) 14%, transparent); }
+    .automation-state.sensor-unavailable .automation-dot { background: var(--red); box-shadow: 0 0 0 5px color-mix(in srgb, var(--red) 14%, transparent); }
+    .automation-title { font-size: 20px; font-weight: 850; letter-spacing: -.03em; }
+    .automation-detail { margin-top: 4px; color: var(--muted); font-size: 14px; }
+    .automation-values { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .automation-value { padding: 10px; border-radius: 14px; background: var(--card); }
+    .automation-value span { display: block; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+    .automation-value strong { display: block; margin-top: 4px; font-size: 17px; }
+    .manual-hint { margin: 0; font-size: 13px; }
     button {
       border: 0; border-radius: 14px; padding: 11px 12px; font: inherit;
       font-weight: 800; color: var(--text); background: var(--surface); cursor: pointer;
@@ -438,7 +559,7 @@ DASHBOARD_HTML = """
     .event { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
     .event span:last-child { color: var(--muted); white-space: nowrap; }
     @media (max-width: 820px) {
-      .controls { grid-template-columns: 1fr; }
+      .controls, .automation-panel { grid-template-columns: 1fr; }
     }
     @media (max-width: 620px) {
       main { width: min(100% - 20px, 1160px); padding-top: 16px; }
@@ -500,6 +621,22 @@ DASHBOARD_HTML = """
           <button id="tempUp" class="step-button" aria-label="Increase target temperature" onclick="sendIR('temp_up')">+</button>
         </div>
       </div>
+      <div class="automation-panel">
+        <div id="automationState" class="automation-state">
+          <span class="automation-dot"></span>
+          <div>
+            <div class="eyebrow">Climate control</div>
+            <div id="automationTitle" class="automation-title">Loading</div>
+            <div id="automationDetail" class="automation-detail"></div>
+          </div>
+        </div>
+        <div class="automation-values">
+          <div class="automation-value"><span>Schedule</span><strong id="scheduleValue">--</strong></div>
+          <div class="automation-value"><span>Cooling band</span><strong id="bandValue">--</strong></div>
+          <div class="automation-value"><span>AC setting</span><strong id="climateSetpoint">--</strong></div>
+        </div>
+      </div>
+      <p id="manualHint" class="manual-hint muted"></p>
       <p id="lastResult" class="muted" aria-live="polite"></p>
       <button class="sync" title="Correct LocalAIR's power state without sending a command" onclick="syncPower()">Power state incorrect? Sync it locally</button>
     </div>
@@ -530,7 +667,10 @@ DASHBOARD_HTML = """
 </main>
 
 <script>
-const labels = {power: "Power", temp_down: "Temp −", temp_up: "Temp +"};
+const labels = {
+  power: "Power", temp_down: "Temp −", temp_up: "Temp +",
+  climate_on: "Cooling started", climate_off: "Cooling stopped"
+};
 
 // Convert stored state values into compact UI labels.
 function title(value) {
@@ -591,9 +731,24 @@ async function refreshStatus() {
   const powerButton = document.getElementById("powerButton");
   powerButton.textContent = power === "on" ? "Turn off" : "Turn on";
   powerButton.className = `power-button ${power}`;
-  powerButton.disabled = !data.ir_commands.power;
-  document.getElementById("tempDown").disabled = !data.ir_commands.temp_down;
-  document.getElementById("tempUp").disabled = !data.ir_commands.temp_up;
+  const manualEnabled = !data.climate.enabled;
+  powerButton.disabled = !data.ir_commands.power || !manualEnabled;
+  document.getElementById("tempDown").disabled = !data.ir_commands.temp_down || !manualEnabled;
+  document.getElementById("tempUp").disabled = !data.ir_commands.temp_up || !manualEnabled;
+  document.getElementById("manualHint").textContent = data.climate.enabled
+    ? "Manual controls are locked while climate control is enabled."
+    : "Manual controls are available while climate control is disabled.";
+
+  const climateClass = data.climate.status.toLowerCase().replaceAll(" ", "-");
+  document.getElementById("automationState").className = `automation-state ${climateClass}`;
+  document.getElementById("automationTitle").textContent = data.climate.status;
+  document.getElementById("automationDetail").textContent = data.climate.detail;
+  document.getElementById("scheduleValue").textContent =
+    `${data.climate.start_time}–${data.climate.end_time}`;
+  document.getElementById("bandValue").textContent =
+    `${data.climate.turn_off_at}–${data.climate.turn_on_at}°`;
+  document.getElementById("climateSetpoint").textContent =
+    `${data.climate.aircon_temperature}°`;
 
   document.getElementById("lastResult").textContent = data.last_result ? data.last_result.message : "";
   document.getElementById("events").innerHTML = data.events.length
@@ -865,6 +1020,10 @@ SETTINGS_HTML = """
     label {{ font-size: 13px; font-weight: 800; }}
     input {{ width: 100%; padding: 12px 13px; border: 1px solid var(--line); border-radius: 12px; outline: none; color: var(--text); background: var(--surface); font: inherit; }}
     input:focus {{ border-color: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent); }}
+    .toggle-row {{ grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }}
+    .toggle-row strong, .toggle-row span {{ display: block; }}
+    .toggle-row span {{ margin-top: 3px; color: var(--muted); font-size: 13px; font-weight: 500; }}
+    .toggle-row input {{ width: 22px; height: 22px; flex: 0 0 auto; accent-color: var(--blue); }}
     .actions {{ grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; margin-top: 8px; }}
     button {{ border: 0; border-radius: 12px; padding: 11px 16px; color: white; background: linear-gradient(145deg, #2469ed, #438cff); font: inherit; font-weight: 800; cursor: pointer; }}
     .muted {{ color: var(--muted); }}
@@ -888,6 +1047,14 @@ SETTINGS_HTML = """
       <div class="field"><label>Virtual AC device ID</label><input name="aircon_device_id" value="{aircon_device_id}" required></div>
       <div class="field"><label>Tuya cloud API key</label><input name="cloud_api_key" type="password" value="" placeholder="Leave blank to keep current key"></div>
       <div class="field"><label>Tuya cloud API secret</label><input name="cloud_api_secret" type="password" value="" placeholder="Leave blank to keep current secret"></div>
+      <h2>Climate schedule</h2>
+      <label class="toggle-row"><span><strong>Enable climate control</strong><span>Automatically cool only during the configured daily schedule.</span></span><input name="climate_enabled" type="checkbox" {climate_enabled}></label>
+      <div class="field"><label>Start time</label><input name="climate_start" type="time" value="{climate_start}" required></div>
+      <div class="field"><label>End time</label><input name="climate_end" type="time" value="{climate_end}" required></div>
+      <div class="field"><label>Turn cooling on at</label><input name="turn_on_at" type="number" min="-20" max="60" step="0.1" value="{turn_on_at}" required></div>
+      <div class="field"><label>Turn cooling off at</label><input name="turn_off_at" type="number" min="-20" max="60" step="0.1" value="{turn_off_at}" required></div>
+      <div class="field"><label>Air-conditioner temperature</label><input name="aircon_temperature" type="number" min="16" max="30" value="{aircon_temperature}" required></div>
+      <div class="field"><label>Sensor timeout seconds</label><input name="sensor_timeout_seconds" type="number" min="5" max="86400" value="{sensor_timeout_seconds}" required></div>
       <h2>LocalAIR service</h2>
       <div class="field"><label>Web host</label><input name="server_host" value="{server_host}" required></div>
       <div class="field"><label>Web port</label><input name="server_port" type="number" min="1" max="65535" value="{server_port}" required></div>

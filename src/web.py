@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 import threading
@@ -72,6 +72,13 @@ class LocalAirService:
             result = self.last_result
             config = self.config
             last_ir = self.last_ir
+        cloud_ready = all(
+            (
+                config.cloud_api_key,
+                config.cloud_api_secret,
+                config.aircon_device_id,
+            )
+        )
         return {
             "brand": "LocalAIR",
             "device": {
@@ -88,7 +95,7 @@ class LocalAirService:
             },
             "ac_state": dict(config.ac_state),
             "ir_commands": {
-                name: name in config.ir_commands
+                name: cloud_ready
                 for name in sorted(IR_COMMANDS)
             },
             "last_result": asdict(result) if result else None,
@@ -104,8 +111,14 @@ class LocalAirService:
         if command not in IR_COMMANDS:
             raise ValueError("Unknown IR command.")
         with self.lock:
-            if command not in self.config.ir_commands:
-                raise ValueError("This IR command has not been learned.")
+            if not all(
+                (
+                    self.config.cloud_api_key,
+                    self.config.cloud_api_secret,
+                    self.config.aircon_device_id,
+                )
+            ):
+                raise ValueError("Tuya cloud details are incomplete.")
         self.monitor.send(command)
 
     def sync_power(self) -> dict[str, str]:
@@ -120,7 +133,8 @@ class LocalAirService:
     def update_settings(self, data: dict[str, str]) -> None:
         with self.lock:
             current = self.config
-        config = AppConfig(
+        config = replace(
+            current,
             ip_address=data.get("ip_address", current.ip_address),
             device_id=data.get("device_id", current.device_id),
             local_key=data.get("local_key", "").strip() or current.local_key,
@@ -133,9 +147,18 @@ class LocalAirService:
                     current.poll_interval_seconds,
                 )
             ),
-            ir_address=current.ir_address,
-            ir_commands=current.ir_commands,
-            ac_state=current.ac_state,
+            cloud_region=data.get("cloud_region", current.cloud_region),
+            cloud_api_key=(
+                data.get("cloud_api_key", "").strip()
+                or current.cloud_api_key
+            ),
+            cloud_api_secret=(
+                data.get("cloud_api_secret", "").strip()
+                or current.cloud_api_secret
+            ),
+            aircon_device_id=data.get(
+                "aircon_device_id", current.aircon_device_id
+            ),
             server_host=data.get("server_host", current.server_host),
             server_port=int(data.get("server_port", current.server_port)),
             history_retention_days=int(
@@ -175,19 +198,7 @@ class LocalAirService:
     def _save_state(self, state: dict[str, str], source: str) -> None:
         with self.lock:
             old_state = dict(self.config.ac_state)
-            self.config = AppConfig(
-                ip_address=self.config.ip_address,
-                device_id=self.config.device_id,
-                local_key=self.config.local_key,
-                protocol_version=self.config.protocol_version,
-                poll_interval_seconds=self.config.poll_interval_seconds,
-                ir_address=self.config.ir_address,
-                ir_commands=self.config.ir_commands,
-                ac_state=state,
-                server_host=self.config.server_host,
-                server_port=self.config.server_port,
-                history_retention_days=self.config.history_retention_days,
-            )
+            self.config = replace(self.config, ac_state=state)
             config = self.config
         save_config(config)
         self.store.add_state_events(source, old_state, state)
@@ -242,6 +253,8 @@ def settings() -> str:
         server_host=html_escape(config.server_host),
         server_port=config.server_port,
         history_retention_days=config.history_retention_days,
+        cloud_region=html_escape(config.cloud_region),
+        aircon_device_id=html_escape(config.aircon_device_id),
     )
 
 
@@ -298,90 +311,117 @@ DASHBOARD_HTML = """
   <title>LocalAIR</title>
   <link rel="icon" type="image/png" href="/localair.png">
   <link rel="apple-touch-icon" href="/localair.png">
+  <script>
+    document.documentElement.dataset.theme = localStorage.getItem("theme") ||
+      (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  </script>
   <style>
     :root {
-      --bg: #eef4f8;
-      --card: #ffffff;
-      --text: #172033;
-      --muted: #667085;
-      --line: #dde7ef;
-      --blue: #2170d1;
-      --orange: #ef6c42;
-      --green: #159463;
-      --red: #c93b32;
-      --shadow: 0 18px 45px rgba(28, 39, 60, .08);
+      color-scheme: light;
+      --bg: #f4f7fb;
+      --card: rgba(255, 255, 255, .82);
+      --surface: #edf2f8;
+      --text: #111827;
+      --muted: #64748b;
+      --line: rgba(148, 163, 184, .24);
+      --grid-line: #e4eaf1;
+      --blue: #3578f6;
+      --orange: #f36f45;
+      --green: #16a678;
+      --red: #dc4c4c;
+      --shadow: 0 20px 55px rgba(43, 58, 85, .10);
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #090d14;
+      --card: rgba(20, 27, 39, .84);
+      --surface: #1b2432;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --line: rgba(148, 163, 184, .16);
+      --grid-line: #273244;
+      --blue: #66a0ff;
+      --orange: #ff8561;
+      --green: #34d399;
+      --red: #fb7185;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .34);
     }
     * { box-sizing: border-box; }
     body {
-      margin: 0;
+      min-height: 100vh; margin: 0;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background:
-        radial-gradient(circle at top left, rgba(33, 112, 209, .18), transparent 28rem),
-        linear-gradient(180deg, #f7fbff, var(--bg));
+        radial-gradient(circle at 8% 0%, rgba(53, 120, 246, .16), transparent 32rem),
+        radial-gradient(circle at 92% 12%, rgba(52, 211, 153, .09), transparent 28rem),
+        var(--bg);
       color: var(--text);
+      transition: background-color .25s ease, color .25s ease;
     }
-    main { width: min(1180px, calc(100% - 32px)); margin: 24px auto; }
+    main { width: min(1160px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 42px; }
     header {
       display: flex; align-items: center; justify-content: space-between;
-      gap: 16px; margin-bottom: 18px;
+      gap: 16px; margin-bottom: 22px;
     }
     .brand { display: flex; align-items: center; gap: 12px; }
     .mark {
-      width: 48px; height: 48px; border-radius: 16px;
+      width: 46px; height: 46px; border-radius: 14px;
       display: grid; place-items: center;
-      background: linear-gradient(135deg, var(--blue), #6bd0ff);
-      color: white; box-shadow: var(--shadow); font-weight: 900;
+      background: linear-gradient(145deg, #2469ed, #68b6ff);
+      color: white; box-shadow: 0 12px 28px rgba(53, 120, 246, .26);
+      font-size: 13px; font-weight: 900; letter-spacing: .06em;
     }
-    h1 { margin: 0; font-size: 30px; letter-spacing: -.04em; }
-    .tagline { margin-top: 2px; color: var(--muted); }
-    a { color: var(--blue); text-decoration: none; font-weight: 700; }
+    h1 { margin: 0; font-size: 27px; letter-spacing: -.045em; }
+    .tagline { margin-top: 1px; color: var(--muted); font-size: 14px; }
+    .header-actions { display: flex; align-items: center; gap: 8px; }
+    a { color: inherit; text-decoration: none; font-weight: 700; }
+    .quiet-button, .settings-link {
+      min-height: 40px; padding: 9px 13px; border: 1px solid var(--line);
+      border-radius: 12px; color: var(--text); background: var(--card);
+      backdrop-filter: blur(18px);
+    }
     .status-bar {
-      background: rgba(255,255,255,.82); backdrop-filter: blur(12px);
-      border: 1px solid var(--line); border-radius: 18px;
-      padding: 14px 16px; box-shadow: var(--shadow);
+      padding: 0 2px; margin-bottom: 14px;
       display: flex; align-items: center; justify-content: space-between; gap: 12px;
-      margin-bottom: 14px;
+      color: var(--muted); font-size: 14px;
     }
-    .dot { width: 11px; height: 11px; border-radius: 99px; background: #98a2b3; display: inline-block; }
+    .dot { width: 9px; height: 9px; border-radius: 99px; background: #94a3b8; display: inline-block; }
     .dot.ok { background: var(--green); }
     .dot.error { background: var(--red); }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     .card {
-      background: rgba(255,255,255,.9); border: 1px solid var(--line);
-      border-radius: 22px; padding: 18px; box-shadow: var(--shadow);
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 24px; padding: 22px; box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
     }
-    .card h2 { margin: 0 0 12px; font-size: 17px; letter-spacing: -.02em; }
-    .metric { font-size: clamp(42px, 6vw, 68px); line-height: .95; font-weight: 850; letter-spacing: -.06em; }
+    .card h2 { margin: 0; font-size: 16px; letter-spacing: -.02em; }
+    .eyebrow { color: var(--muted); font-size: 12px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+    .metric-card { min-height: 180px; display: flex; flex-direction: column; justify-content: space-between; }
+    .metric { font-size: clamp(48px, 7vw, 76px); line-height: .9; font-weight: 820; letter-spacing: -.07em; }
     .temp { color: var(--orange); }
     .humidity { color: var(--blue); }
     .muted { color: var(--muted); }
-    .ac-state {
-      display: grid; grid-template-columns: minmax(150px, .55fr) 1fr;
-      gap: 16px; align-items: stretch;
-    }
-    .power-panel { display: grid; gap: 10px; }
-    .power-state {
-      border-radius: 20px; padding: 18px; display: grid; place-items: center;
-      color: white; background: #7b8794; text-align: center; cursor: default;
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,.22);
-    }
-    .power-state.on { background: linear-gradient(135deg, #2f9f70, #47bd84); }
-    .power-state.off { background: linear-gradient(135deg, #475467, #98a2b3); }
-    .power-state strong { display: block; font-size: 42px; line-height: 1; }
-    .power-state span { opacity: .9; }
-    .state-detail { display: grid; align-content: start; gap: 12px; }
-    .chips { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .chip { background: #f1f6fb; border: 1px solid var(--line); padding: 9px 11px; border-radius: 999px; color: #344054; font-weight: 700; }
-    .button-groups { display: grid; gap: 10px; }
-    .button-group { display: grid; gap: 6px; }
-    .button-group-title { color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
-    .buttons { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; }
+    .climate-card { grid-column: 1 / -1; display: grid; gap: 22px; }
+    .card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .state-pill { padding: 6px 10px; border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 13px; font-weight: 800; }
+    .state-pill.on { color: var(--green); background: color-mix(in srgb, var(--green) 13%, transparent); }
+    .controls { display: grid; grid-template-columns: .75fr 1.25fr; gap: 16px; }
+    .power-control, .temperature-control { min-height: 170px; border-radius: 20px; background: var(--surface); padding: 18px; }
+    .power-control { display: grid; gap: 12px; }
+    .temperature-control { display: grid; grid-template-columns: 56px 1fr 56px; align-items: center; gap: 12px; }
+    .setpoint { text-align: center; }
+    .setpoint strong { display: block; font-size: clamp(48px, 7vw, 72px); line-height: .95; letter-spacing: -.07em; }
+    .setpoint span { display: block; margin-top: 8px; color: var(--muted); font-size: 13px; }
     button {
-      border: 0; border-radius: 13px; padding: 11px 10px; font-weight: 800;
-      color: #344054; background: #eef4fb; cursor: pointer;
+      border: 0; border-radius: 14px; padding: 11px 12px; font: inherit;
+      font-weight: 800; color: var(--text); background: var(--surface); cursor: pointer;
+      transition: transform .15s ease, opacity .15s ease, background .2s ease;
     }
-    button.primary { color: white; background: linear-gradient(135deg, var(--blue), #3d8bff); }
-    button.sync { color: #344054; background: #fff7ed; border: 1px solid #fed7aa; }
+    button:hover:not(:disabled) { transform: translateY(-1px); }
+    button:active:not(:disabled) { transform: translateY(0); }
+    .power-button { color: white; background: linear-gradient(145deg, #2469ed, #438cff); }
+    .power-button.on { background: linear-gradient(145deg, #dc4c4c, #f16b6b); }
+    .step-button { width: 56px; height: 56px; padding: 0; border: 1px solid var(--line); font-size: 28px; }
+    button.sync { justify-self: start; padding: 0; color: var(--muted); background: transparent; font-size: 13px; }
     button:disabled { opacity: .45; cursor: not-allowed; }
     .chart-card { grid-column: 1 / -1; }
     .chart-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -391,16 +431,26 @@ DASHBOARD_HTML = """
     .legend i { width: 18px; height: 4px; border-radius: 999px; display: inline-block; }
     .legend .temp-line { background: var(--orange); }
     .legend .humidity-line { background: var(--blue); }
-    select { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; background: white; }
-    canvas { width: 100%; height: 270px; display: block; }
+    select { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; color: var(--text); background: var(--surface); }
+    canvas { width: 100%; height: 280px; display: block; }
     .events { grid-column: 1 / -1; }
-    .events h2 { margin-bottom: 8px; }
-    .event { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid #eef2f6; }
+    .events h2 { margin-bottom: 12px; }
+    .event { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
     .event span:last-child { color: var(--muted); white-space: nowrap; }
     @media (max-width: 820px) {
-      .grid, .ac-state { grid-template-columns: 1fr; }
-      .chips { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .status-bar, header { align-items: flex-start; flex-direction: column; }
+      .controls { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      main { width: min(100% - 20px, 1160px); padding-top: 16px; }
+      .grid { grid-template-columns: 1fr; gap: 10px; }
+      .metric-card, .climate-card, .chart-card, .events { grid-column: 1; }
+      .card { border-radius: 20px; padding: 18px; }
+      .status-bar { align-items: flex-start; flex-direction: column; }
+      .settings-link { font-size: 0; }
+      .settings-link::after { content: "Settings"; font-size: 14px; }
+      .chart-tools { align-items: flex-start; flex-direction: column; }
+      .temperature-control { grid-template-columns: 50px 1fr 50px; }
+      .step-button { width: 50px; height: 50px; }
     }
   </style>
 </head>
@@ -411,7 +461,10 @@ DASHBOARD_HTML = """
       <div class="mark">AIR</div>
       <div><h1>LocalAIR</h1><div class="tagline">Local climate control</div></div>
     </div>
-    <a href="/settings">Settings</a>
+    <div class="header-actions">
+      <button id="themeToggle" class="quiet-button" type="button" aria-pressed="false" onclick="toggleTheme()">Dark mode</button>
+      <a class="settings-link" href="/settings">Settings</a>
+    </div>
   </header>
 
   <section class="status-bar">
@@ -420,35 +473,35 @@ DASHBOARD_HTML = """
   </section>
 
   <section class="grid">
-    <div class="card">
-      <h2>Temperature</h2>
+    <div class="card metric-card">
+      <div class="eyebrow">Room temperature</div>
       <div id="temperature" class="metric temp">--.-°C</div>
-      <div class="muted">Current room temperature</div>
+      <div class="muted">Measured by the Tuya sensor</div>
     </div>
-    <div class="card">
-      <h2>Humidity</h2>
+    <div class="card metric-card">
+      <div class="eyebrow">Relative humidity</div>
       <div id="humidity" class="metric humidity">--%</div>
-      <div class="muted">Current relative humidity</div>
+      <div class="muted">Current room humidity</div>
     </div>
 
-    <div class="card">
-      <h2>Air conditioner</h2>
-      <div class="ac-state">
-        <div class="power-panel">
-          <div id="powerState" class="power-state"><strong>—</strong><span>Power state</span></div>
-          <button class="sync" title="Correct LocalAIR's power state without sending IR" onclick="syncPower()">Sync Power</button>
+    <div class="card climate-card">
+      <div class="card-heading">
+        <div><div class="eyebrow">Olimpia Splendid</div><h2>PIU14 controls</h2></div>
+        <span id="powerState" class="state-pill">Unknown</span>
+      </div>
+      <div class="controls">
+        <div class="power-control">
+          <div><div class="eyebrow">Power</div><p class="muted">Cloud-connected air conditioner</p></div>
+          <button id="powerButton" class="power-button" onclick="sendIR('power')">Turn on</button>
         </div>
-        <div class="state-detail">
-          <div id="chips" class="chips"></div>
-          <p class="muted">State follows detected IR. Sync changes LocalAIR only.</p>
+        <div class="temperature-control">
+          <button id="tempDown" class="step-button" aria-label="Decrease target temperature" onclick="sendIR('temp_down')">−</button>
+          <div class="setpoint"><strong id="setpoint">--°</strong><span>Target temperature · 16–30 °C</span></div>
+          <button id="tempUp" class="step-button" aria-label="Increase target temperature" onclick="sendIR('temp_up')">+</button>
         </div>
       </div>
-    </div>
-
-    <div class="card">
-      <h2>IR controls</h2>
-      <div class="buttons" id="buttons"></div>
-      <p id="lastResult" class="muted"></p>
+      <p id="lastResult" class="muted" aria-live="polite"></p>
+      <button class="sync" title="Correct LocalAIR's power state without sending a command" onclick="syncPower()">Power state incorrect? Sync it locally</button>
     </div>
 
     <div class="card chart-card">
@@ -477,34 +530,27 @@ DASHBOARD_HTML = """
 </main>
 
 <script>
-const labels = {
-  power: "Power", mode_heat: "Heat", mode_cool: "Cool", mode_dry: "Dry",
-  mode_fan: "Fan", fan_low: "Low", fan_mid: "Mid", fan_high: "High",
-  temp_down: "Temp −", temp_up: "Temp +", swing: "Swing", timer: "Timer", unit_cf: "°C/°F"
-};
-const buttonGroups = [
-  ["Power", ["power"]],
-  ["Temperature", ["temp_down", "temp_up"]],
-  ["Mode", ["mode_heat", "mode_cool", "mode_dry", "mode_fan"]],
-  ["Fan speed", ["fan_low", "fan_mid", "fan_high"]],
-  ["Other", ["swing", "timer", "unit_cf"]]
-];
+const labels = {power: "Power", temp_down: "Temp −", temp_up: "Temp +"};
 
+// Convert stored state values into compact UI labels.
 function title(value) {
   if (!value) return "Unknown";
   return String(value).charAt(0).toUpperCase() + String(value).slice(1);
 }
 
+// Present activity sources consistently.
 function sourceTitle(value) {
   return value === "localair" ? "LocalAIR" : title(value);
 }
 
+// Escape activity text before inserting it into HTML.
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, char => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   }[char]));
 }
 
+// Format event timestamps in the viewer's locale.
 function formatDateTime(value) {
   return new Date(value).toLocaleString([], {
     month: "short", day: "numeric",
@@ -512,15 +558,17 @@ function formatDateTime(value) {
   });
 }
 
+// Turn stored device and control events into readable activity text.
 function eventText(event) {
   if (event.kind === "device") {
     const detail = event.error_message ? ` — ${event.error_message}` : "";
     return `Device · ${event.status || "Status"}${detail}`;
   }
   const command = event.command ? labels[event.command] || title(event.command) : event.nec_hex || "Unknown IR";
-  return `${sourceTitle(event.source)} IR · ${command}`;
+  return `${sourceTitle(event.source)} AC · ${command}`;
 }
 
+// Refresh readings, controls, and activity from the current service snapshot.
 async function refreshStatus() {
   const data = await fetch("/api/status").then(r => r.json());
   document.getElementById("status").textContent = data.reading.status;
@@ -534,29 +582,18 @@ async function refreshStatus() {
 
   const power = data.ac_state.power || "unknown";
   const powerBox = document.getElementById("powerState");
-  powerBox.className = `power-state ${power}`;
-  powerBox.innerHTML = `<strong>${title(power)}</strong><span>Power state</span>`;
-  document.getElementById("chips").innerHTML = [
-    ["Mode", data.ac_state.mode],
-    ["Set", data.ac_state.temperature ? `${data.ac_state.temperature}°C` : null],
-    ["Fan", data.ac_state.fan],
-    ["Swing", data.ac_state.swing]
-  ].map(([k, v]) => `<span class="chip">${k}: ${title(v)}</span>`).join("");
+  powerBox.className = `state-pill ${power}`;
+  powerBox.textContent = power === "unknown" ? "Unknown" : `Power ${power}`;
+  document.getElementById("setpoint").textContent = data.ac_state.temperature
+    ? `${data.ac_state.temperature}°`
+    : "--°";
 
-  const buttons = document.getElementById("buttons");
-  buttons.className = "button-groups";
-  buttons.innerHTML = buttonGroups.map(([group, commands]) => `
-    <div class="button-group">
-      <div class="button-group-title">${group}</div>
-      <div class="buttons">
-        ${commands.map(command => {
-          const disabled = data.ir_commands[command] ? "" : "disabled";
-          const cls = command === "power" ? "primary" : "";
-          return `<button class="${cls}" ${disabled} onclick="sendIR('${command}')">${labels[command]}</button>`;
-        }).join("")}
-      </div>
-    </div>
-  `).join("");
+  const powerButton = document.getElementById("powerButton");
+  powerButton.textContent = power === "on" ? "Turn off" : "Turn on";
+  powerButton.className = `power-button ${power}`;
+  powerButton.disabled = !data.ir_commands.power;
+  document.getElementById("tempDown").disabled = !data.ir_commands.temp_down;
+  document.getElementById("tempUp").disabled = !data.ir_commands.temp_up;
 
   document.getElementById("lastResult").textContent = data.last_result ? data.last_result.message : "";
   document.getElementById("events").innerHTML = data.events.length
@@ -564,22 +601,36 @@ async function refreshStatus() {
     : "No events yet.";
 }
 
+// Queue one PIU14 cloud control and then refresh its assumed state.
 async function sendIR(command) {
   await fetch(`/api/ir/${command}`, {method: "POST"});
   setTimeout(refreshStatus, 500);
 }
 
+// Correct the locally assumed power state without operating the AC.
 async function syncPower() {
   await fetch("/api/sync/power", {method: "POST"});
   refreshStatus();
 }
 
+// Load the selected history window and redraw its chart.
 async function loadHistory() {
   const range = document.getElementById("range").value;
   const data = await fetch(`/api/history?range=${range}`).then(r => r.json());
   drawChart(data.points, range);
 }
 
+// Toggle and persist the light or dark appearance.
+function toggleTheme() {
+  const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem("theme", theme);
+  document.getElementById("themeToggle").textContent = theme === "dark" ? "Light mode" : "Dark mode";
+  document.getElementById("themeToggle").setAttribute("aria-pressed", theme === "dark");
+  loadHistory();
+}
+
+// Render responsive temperature and humidity history lines.
 function drawChart(points, range) {
   const canvas = document.getElementById("chart");
   const w = canvas.clientWidth || 1100;
@@ -588,12 +639,16 @@ function drawChart(points, range) {
   canvas.height = h;
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
+  const styles = getComputedStyle(document.documentElement);
+  const muted = styles.getPropertyValue("--muted").trim();
+  const gridLine = styles.getPropertyValue("--grid-line").trim();
+  const orange = styles.getPropertyValue("--orange").trim();
+  const blue = styles.getPropertyValue("--blue").trim();
   const left = 58, right = 58, top = 24, bottom = 42;
   const gw = w - left - right, gh = h - top - bottom;
 
   if (points.length === 0) {
-    ctx.fillStyle = "#667085"; ctx.font = "15px sans-serif";
+    ctx.fillStyle = muted; ctx.font = "15px sans-serif";
     ctx.fillText("History graph appears after the first stored reading", left + 245, top + gh / 2);
     return;
   }
@@ -610,13 +665,14 @@ function drawChart(points, range) {
   drawAxes();
 
   if (points.length === 1) {
-    drawPoint(points[0].temperature_c, tempScale.min, tempScale.max, "#ef6c42", left + gw / 2);
-    drawPoint(points[0].humidity_percent, humidityScale.min, humidityScale.max, "#2170d1", left + gw / 2 + 12);
+    drawPoint(points[0].temperature_c, tempScale.min, tempScale.max, orange, left + gw / 2);
+    drawPoint(points[0].humidity_percent, humidityScale.min, humidityScale.max, blue, left + gw / 2 + 12);
   } else {
-    drawLine(points.map(p => p.temperature_c), tempScale.min, tempScale.max, "#ef6c42", false);
-    drawLine(points.map(p => p.humidity_percent), humidityScale.min, humidityScale.max, "#2170d1", true);
+    drawLine(points.map(p => p.temperature_c), tempScale.min, tempScale.max, orange, false);
+    drawLine(points.map(p => p.humidity_percent), humidityScale.min, humidityScale.max, blue, true);
   }
 
+  // Calculate a readable axis range for one metric.
   function axisScale(minValue, maxValue, preferredStep, kind) {
     let min = kind === "temperature"
       ? Math.floor(minValue)
@@ -642,6 +698,7 @@ function drawChart(points, range) {
     return {min, max, ticks};
   }
 
+  // Draw grid lines, units, and time labels for both metrics.
   function drawAxes() {
     ctx.font = "12px sans-serif";
     ctx.textBaseline = "middle";
@@ -649,36 +706,36 @@ function drawChart(points, range) {
 
     ctx.textBaseline = "top";
     ctx.font = "12px sans-serif";
-    ctx.fillStyle = "#ef6c42";
+    ctx.fillStyle = orange;
     ctx.textAlign = "right";
     ctx.fillText("°C", left - 8, 4);
-    ctx.fillStyle = "#2170d1";
+    ctx.fillStyle = blue;
     ctx.textAlign = "left";
     ctx.fillText("%", left + gw + 8, 4);
     ctx.textBaseline = "middle";
 
     for (const value of tempScale.ticks) {
       const y = yFor(value, tempScale.min, tempScale.max);
-      ctx.strokeStyle = "#e4ebf2";
+      ctx.strokeStyle = gridLine;
       ctx.beginPath();
       ctx.moveTo(left, y);
       ctx.lineTo(left + gw, y);
       ctx.stroke();
-      ctx.fillStyle = "#ef6c42";
+      ctx.fillStyle = orange;
       ctx.textAlign = "right";
       ctx.fillText(`${value}°`, left - 8, y);
     }
 
     for (const value of humidityScale.ticks) {
       const y = yFor(value, humidityScale.min, humidityScale.max);
-      ctx.fillStyle = "#2170d1";
+      ctx.fillStyle = blue;
       ctx.textAlign = "left";
       ctx.fillText(`${value}%`, left + gw + 8, y);
     }
 
     ctx.textBaseline = "top";
-    ctx.fillStyle = "#667085";
-    ctx.strokeStyle = "#edf1f5";
+    ctx.fillStyle = muted;
+    ctx.strokeStyle = gridLine;
     for (const tick of timeTicks(range, dates[0], dates[dates.length - 1])) {
       const x = xFor(tick.date);
       ctx.beginPath();
@@ -690,6 +747,7 @@ function drawChart(points, range) {
     }
   }
 
+  // Choose evenly spaced time labels for the selected history window.
   function timeTicks(range, start, end) {
     const ticks = [];
     const startMs = start.getTime(), endMs = end.getTime();
@@ -709,6 +767,7 @@ function drawChart(points, range) {
     return ticks;
   }
 
+  // Format a chart time label for short or long ranges.
   function timeLabel(date, range) {
     if (range === "7d" || range === "31d") {
       return date.toLocaleDateString([], {month: "short", day: "numeric"});
@@ -716,25 +775,42 @@ function drawChart(points, range) {
     return date.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
   }
 
+  // Map a timestamp into the graph's horizontal plot area.
   function xFor(date) {
     return left + gw * ((date.getTime() - startTime) / timeSpan);
   }
 
+  // Map a metric value into the graph's vertical plot area.
   function yFor(value, min, max) {
     return top + gh * (1 - (value - min) / (max - min));
   }
 
+  // Draw a rounded quadratic curve through all readings.
   function drawLine(values, min, max, color, dashed) {
-    ctx.strokeStyle = color; ctx.lineWidth = 4; ctx.setLineDash(dashed ? [8, 6] : []);
+    const coordinates = values.map((value, i) => ({
+      x: xFor(dates[i]), y: yFor(value, min, max)
+    }));
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3.5;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.setLineDash(dashed ? [8, 7] : []);
     ctx.beginPath();
-    values.forEach((value, i) => {
-      const x = xFor(dates[i]);
-      const y = yFor(value, min, max);
-      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-    });
-    ctx.stroke(); ctx.setLineDash([]);
+    ctx.moveTo(coordinates[0].x, coordinates[0].y);
+    for (let i = 1; i < coordinates.length - 1; i++) {
+      const midpointX = (coordinates[i].x + coordinates[i + 1].x) / 2;
+      const midpointY = (coordinates[i].y + coordinates[i + 1].y) / 2;
+      ctx.quadraticCurveTo(
+        coordinates[i].x, coordinates[i].y, midpointX, midpointY
+      );
+    }
+    const last = coordinates[coordinates.length - 1];
+    ctx.quadraticCurveTo(last.x, last.y, last.x, last.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 
+  // Draw one reading when a history window has a single sample.
   function drawPoint(value, min, max, color, x) {
     const y = yFor(value, min, max);
     ctx.fillStyle = color;
@@ -744,6 +820,11 @@ function drawChart(points, range) {
   }
 }
 
+document.getElementById("themeToggle").textContent =
+  document.documentElement.dataset.theme === "dark" ? "Light mode" : "Dark mode";
+document.getElementById("themeToggle").setAttribute(
+  "aria-pressed", document.documentElement.dataset.theme === "dark"
+);
 refreshStatus();
 loadHistory();
 setInterval(refreshStatus, 3000);
@@ -763,42 +844,55 @@ SETTINGS_HTML = """
   <title>LocalAIR Settings</title>
   <link rel="icon" type="image/png" href="/localair.png">
   <link rel="apple-touch-icon" href="/localair.png">
+  <script>
+    document.documentElement.dataset.theme = localStorage.getItem("theme") ||
+      (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  </script>
   <style>
-    body {{ margin: 0; font-family: system-ui, sans-serif; background: #eef4f8; color: #172033; }}
-    main {{ width: min(760px, calc(100% - 32px)); margin: 28px auto; }}
-    .card {{ background: white; border: 1px solid #dde7ef; border-radius: 22px; padding: 22px; box-shadow: 0 18px 45px rgba(28,39,60,.08); }}
-    h1 {{ margin-top: 0; }}
-    label {{ display: block; margin: 14px 0 6px; font-weight: 800; }}
-    input {{ width: 100%; padding: 11px; border: 1px solid #cfd8e3; border-radius: 12px; font: inherit; }}
-    button, a.button {{ display: inline-block; margin-top: 18px; border: 0; border-radius: 13px; padding: 11px 16px; font-weight: 800; background: #2170d1; color: white; text-decoration: none; }}
-    a {{ color: #2170d1; }}
-    .muted {{ color: #667085; }}
+    :root {{ color-scheme: light; --bg: #f4f7fb; --card: rgba(255,255,255,.86); --surface: #f8fafc; --text: #111827; --muted: #64748b; --line: #dce4ee; --blue: #3578f6; --shadow: 0 24px 70px rgba(43,58,85,.11); }}
+    :root[data-theme="dark"] {{ color-scheme: dark; --bg: #090d14; --card: rgba(20,27,39,.88); --surface: #111827; --text: #f1f5f9; --muted: #94a3b8; --line: #2a3546; --blue: #66a0ff; --shadow: 0 24px 70px rgba(0,0,0,.35); }}
+    * {{ box-sizing: border-box; }}
+    body {{ min-height: 100vh; margin: 0; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: radial-gradient(circle at 8% 0%, rgba(53,120,246,.16), transparent 32rem), var(--bg); color: var(--text); }}
+    main {{ width: min(820px, calc(100% - 28px)); margin: 0 auto; padding: 28px 0 42px; }}
+    header {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }}
+    h1 {{ margin: 0; font-size: 28px; letter-spacing: -.04em; }}
+    h2 {{ grid-column: 1 / -1; margin: 12px 0 0; font-size: 13px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }}
+    a {{ padding: 9px 13px; border: 1px solid var(--line); border-radius: 12px; color: var(--text); background: var(--card); text-decoration: none; font-weight: 750; }}
+    .card {{ background: var(--card); border: 1px solid var(--line); border-radius: 24px; padding: 24px; box-shadow: var(--shadow); backdrop-filter: blur(18px); }}
+    .form-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
+    .field {{ display: grid; gap: 7px; }}
+    .wide {{ grid-column: 1 / -1; }}
+    label {{ font-size: 13px; font-weight: 800; }}
+    input {{ width: 100%; padding: 12px 13px; border: 1px solid var(--line); border-radius: 12px; outline: none; color: var(--text); background: var(--surface); font: inherit; }}
+    input:focus {{ border-color: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent); }}
+    .actions {{ grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; margin-top: 8px; }}
+    button {{ border: 0; border-radius: 12px; padding: 11px 16px; color: white; background: linear-gradient(145deg, #2469ed, #438cff); font: inherit; font-weight: 800; cursor: pointer; }}
+    .muted {{ color: var(--muted); }}
+    @media (max-width: 620px) {{ .form-grid {{ grid-template-columns: 1fr; }} .wide, h2, .actions {{ grid-column: 1; }} .card {{ padding: 18px; border-radius: 20px; }} }}
   </style>
 </head>
 <body>
 <main>
+  <header><div><h1>Settings</h1><div class="muted">LocalAIR and PIU14 connection details</div></div><a href="/">Back</a></header>
   <div class="card">
-    <h1>LocalAIR Settings</h1>
-    <p class="muted">The local key is saved to config only and is not printed by LocalAIR.</p>
-    <form method="post">
-      <label>IP address</label>
-      <input name="ip_address" value="{ip_address}" required>
-      <label>Device ID</label>
-      <input name="device_id" value="{device_id}" required>
-      <label>Local key</label>
-      <input name="local_key" value="" placeholder="Leave blank to keep current key">
-      <label>Protocol version</label>
-      <input name="protocol_version" value="{protocol_version}" required>
-      <label>Poll interval seconds</label>
-      <input name="poll_interval_seconds" type="number" min="5" max="3600" value="{poll_interval_seconds}" required>
-      <label>Web host</label>
-      <input name="server_host" value="{server_host}" required>
-      <label>Web port</label>
-      <input name="server_port" type="number" min="1" max="65535" value="{server_port}" required>
-      <label>History retention days</label>
-      <input name="history_retention_days" type="number" min="1" max="365" value="{history_retention_days}" required>
-      <button type="submit">Save settings</button>
-      <a class="button" href="/" style="background:#eef4fb;color:#344054;">Cancel</a>
+    <p class="muted">Keys and secrets are saved to config only and are not printed by LocalAIR.</p>
+    <form class="form-grid" method="post">
+      <h2>Local sensor</h2>
+      <div class="field"><label>IP address</label><input name="ip_address" value="{ip_address}" required></div>
+      <div class="field"><label>Device ID</label><input name="device_id" value="{device_id}" required></div>
+      <div class="field"><label>Local key</label><input name="local_key" type="password" value="" placeholder="Leave blank to keep current key"></div>
+      <div class="field"><label>Protocol version</label><input name="protocol_version" value="{protocol_version}" required></div>
+      <div class="field wide"><label>Poll interval seconds</label><input name="poll_interval_seconds" type="number" min="5" max="3600" value="{poll_interval_seconds}" required></div>
+      <h2>Olimpia Splendid PIU14</h2>
+      <div class="field"><label>Tuya cloud region</label><input name="cloud_region" value="{cloud_region}" required></div>
+      <div class="field"><label>Virtual AC device ID</label><input name="aircon_device_id" value="{aircon_device_id}" required></div>
+      <div class="field"><label>Tuya cloud API key</label><input name="cloud_api_key" type="password" value="" placeholder="Leave blank to keep current key"></div>
+      <div class="field"><label>Tuya cloud API secret</label><input name="cloud_api_secret" type="password" value="" placeholder="Leave blank to keep current secret"></div>
+      <h2>LocalAIR service</h2>
+      <div class="field"><label>Web host</label><input name="server_host" value="{server_host}" required></div>
+      <div class="field"><label>Web port</label><input name="server_port" type="number" min="1" max="65535" value="{server_port}" required></div>
+      <div class="field wide"><label>History retention days</label><input name="history_retention_days" type="number" min="1" max="365" value="{history_retention_days}" required></div>
+      <div class="actions"><button type="submit">Save settings</button><a href="/">Cancel</a></div>
     </form>
   </div>
 </main>

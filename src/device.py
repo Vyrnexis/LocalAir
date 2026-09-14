@@ -1,4 +1,4 @@
-"""Read the Tuya sensor and send learned IR commands."""
+"""Read the Tuya sensor and control the configured Tuya cloud AC."""
 
 from __future__ import annotations
 
@@ -17,16 +17,6 @@ IR_COMMANDS = {
     "power",
     "temp_up",
     "temp_down",
-    "mode_heat",
-    "mode_cool",
-    "mode_dry",
-    "mode_fan",
-    "fan_high",
-    "fan_mid",
-    "fan_low",
-    "swing",
-    "timer",
-    "unit_cf",
 }
 
 
@@ -72,8 +62,9 @@ def update_ac_state(state: dict[str, str], command: str) -> dict[str, str]:
         except (KeyError, ValueError):
             pass
         else:
+            change = 1 if command == "temp_up" else -1
             updated["temperature"] = str(
-                temperature + (1 if command == "temp_up" else -1)
+                min(30, max(16, temperature + change))
             )
     elif command in {"swing", "timer"}:
         current = updated.get(command)
@@ -125,41 +116,65 @@ class TuyaDevice:
     def send_ir(self, config: AppConfig, command: str) -> CommandResult:
         if command not in IR_COMMANDS:
             return CommandResult(False, "Unknown IR command.")
-        if not config.local_key:
-            return CommandResult(
-                False, "Open Settings and enter the device local key."
+        if not all(
+            (
+                config.cloud_api_key,
+                config.cloud_api_secret,
+                config.aircon_device_id,
             )
-
-        command_byte = config.ir_commands.get(command)
-        if command_byte is None:
-            return CommandResult(False, "This IR command has not been learned.")
+        ):
+            return CommandResult(
+                False, "Open Settings and enter the Tuya cloud details."
+            )
 
         try:
-            from tinytuya.Contrib.IRRemoteControlDevice import (
-                IRRemoteControlDevice,
-            )
+            import tinytuya
 
-            pulses = IRRemoteControlDevice.nec_to_pulses(
-                self._nec_frame(config.ir_address, command_byte)
+            instruction, message = self._cloud_instruction(
+                command, config.ac_state
             )
-            code = IRRemoteControlDevice.pulses_to_base64(pulses)
-
-            device = IRRemoteControlDevice(
-                config.device_id,
-                config.ip_address,
-                config.local_key,
-                version=config.protocol_version,
-                control_type=1,
+            cloud = tinytuya.Cloud(
+                apiRegion=config.cloud_region,
+                apiKey=config.cloud_api_key,
+                apiSecret=config.cloud_api_secret,
+                apiDeviceID=config.device_id,
             )
-            device.set_socketTimeout(8)
-            device.send_button(code)
-            return CommandResult(True, "IR command sent.")
+            response = cloud.sendcommand(
+                config.aircon_device_id,
+                {"commands": [instruction]},
+            )
+            if not isinstance(response, dict) or not response.get("success"):
+                return CommandResult(False, "Tuya cloud rejected the command.")
+            return CommandResult(True, message)
         except ImportError:
             return CommandResult(False, "TinyTuya is not installed.")
+        except ValueError as exc:
+            return CommandResult(False, str(exc))
         except Exception as exc:
             return CommandResult(
-                False, f"Could not send IR command ({type(exc).__name__})."
+                False, f"Could not send AC command ({type(exc).__name__})."
             )
+
+    # Build the PIU14 virtual remote instruction from LocalAIR's assumed state.
+    @staticmethod
+    def _cloud_instruction(
+        command: str, state: dict[str, str]
+    ) -> tuple[dict[str, Any], str]:
+        if command == "power":
+            turn_on = state.get("power") != "on"
+            value = "PowerOn" if turn_on else "PowerOff"
+            power = "on" if turn_on else "off"
+            return {"code": value, "value": value}, f"Power turned {power}."
+        try:
+            current = int(state["temperature"])
+        except (KeyError, ValueError):
+            raise ValueError(
+                "Sync the current temperature before changing it."
+            ) from None
+        change = 1 if command == "temp_up" else -1
+        temperature = min(30, max(16, current + change))
+        message = f"Temperature set to {temperature}°C."
+        return {"code": "T", "value": temperature}, message
 
     @staticmethod
     def _nec_frame(address: int, command: int) -> int:
@@ -341,7 +356,7 @@ class DeviceMonitor:
                     next_poll = min(next_poll, time.monotonic() + 0.2)
                 elif action == "send" and command:
                     device.study_end()
-                    result = self._send_with_device(device, config, command)
+                    result = TuyaDevice().send_ir(config, command)
                     self.on_result(result)
                     if result.ok:
                         self.on_ir(command, "localair")
@@ -380,24 +395,6 @@ class DeviceMonitor:
         time.sleep(0.2)
         device.study_start()
         time.sleep(0.2)
-
-    @staticmethod
-    def _send_with_device(device, config, command: str) -> CommandResult:
-        if command not in IR_COMMANDS:
-            return CommandResult(False, "Unknown IR command.")
-        command_byte = config.ir_commands.get(command)
-        if command_byte is None:
-            return CommandResult(False, "This IR command has not been learned.")
-        try:
-            pulses = device.nec_to_pulses(
-                TuyaDevice._nec_frame(config.ir_address, command_byte)
-            )
-            device.send_button(device.pulses_to_base64(pulses))
-            return CommandResult(True, "IR command sent.")
-        except Exception as exc:
-            return CommandResult(
-                False, f"Could not send IR command ({type(exc).__name__})."
-            )
 
     def _handle_ir_response(self, response: Any, config: AppConfig) -> bool:
         if not isinstance(response, dict) or not isinstance(

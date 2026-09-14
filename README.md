@@ -7,21 +7,27 @@ It runs on your LAN and gives you a local dashboard for:
 
 - temperature and humidity monitoring
 - SQLite-backed history graphs
-- learned AC IR controls
-- Sensibo/remote IR observation
+- Olimpia Splendid PIU14 power and 16–30 °C controls
 - assumed AC state tracking
 - Sync Power state correction
 
-LocalAIR does not need cloud access after you have the Tuya device details:
+Sensor readings stay local. PIU14 control uses the Tuya cloud virtual remote
+because this air conditioner does not use the old Kogan NEC command format.
+
+You need these local device details:
 
 - device IP address
 - device ID
 - local key
 - protocol version
 
-## Supported device model
+You also need the Tuya cloud region, API key, API secret, and the virtual
+air-conditioner device ID shown as `Air` by the TinyTuya wizard.
 
-This first version targets a Tuya IR temperature/humidity remote like:
+## Supported devices
+
+Temperature and humidity are read from a Tuya IR temperature/humidity remote
+like:
 
 ```text
 My AC / Tuya IR Temp Humidity Remote
@@ -44,15 +50,9 @@ DP 1 = temperature, divide by 10
 DP 2 = humidity percentage
 ```
 
-Known IR format:
-
-```text
-NEC address 0x08E7
-one-byte command values
-```
-
-Other Tuya IR devices may work later, but the current defaults are specific to
-this device family.
+Power and temperature control targets the Olimpia Splendid PIU14 virtual AC
+remote configured in Smart Life. The cloud project must remain active for
+control commands.
 
 ## What you need before first start
 
@@ -64,6 +64,16 @@ ip_address = "192.168.1.145"
 device_id = "YOUR_DEVICE_ID"
 local_key = "YOUR_LOCAL_KEY"
 protocol_version = 3.5
+```
+
+The control settings are:
+
+```toml
+[tuya_cloud]
+region = "eu"
+api_key = "YOUR_TUYA_API_KEY"
+api_secret = "YOUR_TUYA_API_SECRET"
+aircon_device_id = "YOUR_VIRTUAL_AC_DEVICE_ID"
 ```
 
 The web UI can edit settings after the app is running, but the first launch
@@ -334,6 +344,12 @@ local_key = "REPLACE_WITH_YOUR_LOCAL_KEY"
 protocol_version = 3.5
 poll_interval_seconds = 30
 
+[tuya_cloud]
+region = "eu"
+api_key = "REPLACE_WITH_YOUR_TUYA_API_KEY"
+api_secret = "REPLACE_WITH_YOUR_TUYA_API_SECRET"
+aircon_device_id = "REPLACE_WITH_YOUR_VIRTUAL_AC_DEVICE_ID"
+
 [server]
 host = "0.0.0.0"
 port = 8787
@@ -341,30 +357,9 @@ port = 8787
 [history]
 retention_days = 31
 
-[ir]
-address = 0x08E7
-
-[ir.commands]
-power = 0x00
-timer = 0x80
-unit_cf = 0x20
-swing = 0x60
-mode_fan = 0x10
-mode_cool = 0x28
-mode_dry = 0x30
-mode_heat = 0x90
-temp_up = 0xA8
-temp_down = 0xB0
-fan_low = 0x50
-fan_mid = 0x70
-fan_high = 0x68
-
 [ac_state]
-power = "on"
-mode = "heat"
-temperature = "25"
-fan = "mid"
-swing = "off"
+power = "off"
+temperature = "24"
 ```
 
 ## Data storage
@@ -387,14 +382,14 @@ The dashboard includes:
 - connection and last-update status
 - large temperature and humidity cards
 - AC assumed state card
-- IR control buttons
+- PIU14 power and temperature buttons
 - Sync Power button
 - temperature/humidity history graph with Daily, Weekly, and Monthly views
 - recent activity list with IR events and device errors/disconnects
 - settings page
 
 The Sync Power button only changes LocalAIR's saved power state. It does not
-send an IR command.
+send a command.
 
 ### Screenshots
 
@@ -406,16 +401,13 @@ Settings page:
 
 ![LocalAIR settings page](screenshots/LocalAIR.Web.UI.Settings.png)
 
-## IR and AC state behavior
+## AC state behavior
 
-Learned commands are stored as NEC bytes in `config.toml`. LocalAIR converts
-those bytes into Tuya IR payloads when sending commands.
+LocalAIR sends the PIU14 virtual remote's `PowerOn`, `PowerOff`, and direct
+16–30 °C `T` commands through Tuya cloud. Because IR is one-way, LocalAIR
+tracks an assumed state. It updates that state when:
 
-Power, Swing, Timer, and C/F are toggle commands. Because IR is one-way,
-LocalAIR tracks an assumed state. It updates that state when:
-
-- LocalAIR sends a known IR command
-- LocalAIR observes a matching Sensibo/remote command
+- LocalAIR successfully sends an AC command
 - you press Sync Power
 
 Unknown observed IR signals are logged to:

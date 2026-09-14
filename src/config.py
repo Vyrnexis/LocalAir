@@ -15,10 +15,12 @@ DEFAULT_DEVICE_ID = "bfc626075b28194ecfhor5"
 DEFAULT_PROTOCOL_VERSION = 3.5
 DEFAULT_POLL_INTERVAL_SECONDS = 30
 DEFAULT_IR_ADDRESS = 0x08E7
+DEFAULT_CLOUD_REGION = "eu"
 DEFAULT_SERVER_HOST = "0.0.0.0"
 DEFAULT_SERVER_PORT = 8787
 DEFAULT_HISTORY_RETENTION_DAYS = 31
 AC_STATE_KEYS = {"power", "mode", "temperature", "fan", "swing", "timer"}
+DEFAULT_AC_STATE = {"power": "off", "temperature": "24"}
 
 
 def data_path() -> Path | None:
@@ -61,7 +63,13 @@ class AppConfig:
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     ir_address: int = DEFAULT_IR_ADDRESS
     ir_commands: dict[str, int] = field(default_factory=dict)
-    ac_state: dict[str, str] = field(default_factory=dict)
+    ac_state: dict[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_AC_STATE)
+    )
+    cloud_region: str = DEFAULT_CLOUD_REGION
+    cloud_api_key: str = ""
+    cloud_api_secret: str = ""
+    aircon_device_id: str = ""
     server_host: str = DEFAULT_SERVER_HOST
     server_port: int = DEFAULT_SERVER_PORT
     history_retention_days: int = DEFAULT_HISTORY_RETENTION_DAYS
@@ -70,6 +78,7 @@ class AppConfig:
         ip = self.ip_address.strip()
         device_id = self.device_id.strip()
         server_host = self.server_host.strip() or DEFAULT_SERVER_HOST
+        cloud_region = self.cloud_region.strip().lower()
         if not ip:
             raise ValueError("IP address is required.")
         if not device_id:
@@ -84,6 +93,16 @@ class AppConfig:
             raise ValueError("IR commands must fit in one byte.")
         if any(key not in AC_STATE_KEYS for key in self.ac_state):
             raise ValueError("Unknown AC state field.")
+        if cloud_region not in {
+            "cn",
+            "us",
+            "us-e",
+            "eu",
+            "eu-w",
+            "in",
+            "sg",
+        }:
+            raise ValueError("Unknown Tuya cloud region.")
         if not 1 <= self.server_port <= 65535:
             raise ValueError("Server port must be between 1 and 65535.")
         if not 1 <= self.history_retention_days <= 365:
@@ -93,6 +112,10 @@ class AppConfig:
             ip_address=ip,
             device_id=device_id,
             server_host=server_host,
+            cloud_region=cloud_region,
+            cloud_api_key=self.cloud_api_key.strip(),
+            cloud_api_secret=self.cloud_api_secret.strip(),
+            aircon_device_id=self.aircon_device_id.strip(),
         )
 
 
@@ -108,10 +131,11 @@ def load_config(path: Path | None = None) -> AppConfig:
         ir = raw.get("ir", {})
         server = raw.get("server", {})
         history = raw.get("history", {})
+        cloud = raw.get("tuya_cloud", {})
         if not isinstance(device, dict) or not isinstance(ir, dict):
             raise ValueError("Expected [device] and [ir] tables.")
         commands = ir.get("commands", {})
-        ac_state = raw.get("ac_state", {})
+        ac_state = raw.get("ac_state", DEFAULT_AC_STATE)
         if not isinstance(commands, dict):
             raise ValueError("Expected an [ir.commands] table.")
         if not isinstance(ac_state, dict):
@@ -120,6 +144,8 @@ def load_config(path: Path | None = None) -> AppConfig:
             raise ValueError("Expected a [server] table.")
         if not isinstance(history, dict):
             raise ValueError("Expected a [history] table.")
+        if not isinstance(cloud, dict):
+            raise ValueError("Expected a [tuya_cloud] table.")
         return AppConfig(
             ip_address=str(device.get("ip_address", DEFAULT_IP_ADDRESS)),
             device_id=str(device.get("device_id", DEFAULT_DEVICE_ID)),
@@ -143,6 +169,10 @@ def load_config(path: Path | None = None) -> AppConfig:
                 for name, value in ac_state.items()
                 if str(name) in AC_STATE_KEYS
             },
+            cloud_region=str(cloud.get("region", DEFAULT_CLOUD_REGION)),
+            cloud_api_key=str(cloud.get("api_key", "")),
+            cloud_api_secret=str(cloud.get("api_secret", "")),
+            aircon_device_id=str(cloud.get("aircon_device_id", "")),
             server_host=str(server.get("host", DEFAULT_SERVER_HOST)),
             server_port=int(server.get("port", DEFAULT_SERVER_PORT)),
             history_retention_days=int(
@@ -177,6 +207,11 @@ def save_config(config: AppConfig, path: Path | None = None) -> Path:
         f"local_key = {_toml_string(config.local_key)}\n"
         f"protocol_version = {config.protocol_version:.1f}\n"
         f"poll_interval_seconds = {config.poll_interval_seconds}\n\n"
+        "[tuya_cloud]\n"
+        f"region = {_toml_string(config.cloud_region)}\n"
+        f"api_key = {_toml_string(config.cloud_api_key)}\n"
+        f"api_secret = {_toml_string(config.cloud_api_secret)}\n"
+        f"aircon_device_id = {_toml_string(config.aircon_device_id)}\n\n"
         "[server]\n"
         f"host = {_toml_string(config.server_host)}\n"
         f"port = {config.server_port}\n\n"

@@ -42,7 +42,10 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(loaded.poll_interval_seconds, 30)
             self.assertEqual(loaded.ir_address, 0x08E7)
             self.assertEqual(loaded.ir_commands, {})
-            self.assertEqual(loaded.ac_state, {})
+            self.assertEqual(
+                loaded.ac_state,
+                {"power": "off", "temperature": "24"},
+            )
 
 
 class DeviceTests(unittest.TestCase):
@@ -94,14 +97,41 @@ class DeviceTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.message, "Unknown IR command.")
 
-    def test_missing_ir_code_has_clear_error(self) -> None:
+    def test_missing_cloud_details_have_clear_error(self) -> None:
         result = TuyaDevice().send_ir(
             AppConfig(local_key="not-a-real-key"),
             "power",
         )
 
         self.assertFalse(result.ok)
-        self.assertIn("not been learned", result.message)
+        self.assertIn("Tuya cloud details", result.message)
+
+    # Verify PIU14 controls use its cloud function names and direct temperature.
+    def test_piu14_cloud_instructions(self) -> None:
+        power, power_message = TuyaDevice._cloud_instruction(
+            "power", {"power": "off"}
+        )
+        temperature, temperature_message = TuyaDevice._cloud_instruction(
+            "temp_up", {"temperature": "29"}
+        )
+
+        self.assertEqual(
+            power, {"code": "PowerOn", "value": "PowerOn"}
+        )
+        self.assertEqual(power_message, "Power turned on.")
+        self.assertEqual(temperature, {"code": "T", "value": 30})
+        self.assertEqual(temperature_message, "Temperature set to 30°C.")
+
+    # Keep repeated temperature presses inside the PIU14's supported range.
+    def test_temperature_state_is_clamped(self) -> None:
+        self.assertEqual(
+            update_ac_state({"temperature": "30"}, "temp_up"),
+            {"temperature": "30"},
+        )
+        self.assertEqual(
+            update_ac_state({"temperature": "16"}, "temp_down"),
+            {"temperature": "16"},
+        )
 
     def test_nec_frame_uses_wire_order_and_inverse_byte(self) -> None:
         self.assertEqual(TuyaDevice._nec_frame(0x08E7, 0x28), 0x08E728D7)
@@ -132,6 +162,24 @@ class DeviceTests(unittest.TestCase):
 
     def test_unknown_toggle_state_remains_unknown(self) -> None:
         self.assertEqual(update_ac_state({}, "power"), {})
+
+
+class WebUiTests(unittest.TestCase):
+    # Keep the dependency-free dashboard focused on PIU14 and its requested UI.
+    def test_dashboard_has_piu14_controls_dark_mode_and_smooth_graph(self) -> None:
+        source = (Path(__file__).parents[1] / "src" / "web.py").read_text(
+            encoding="utf-8"
+        )
+        dashboard = source.split('DASHBOARD_HTML = """', 1)[1].split(
+            'SETTINGS_HTML = """', 1
+        )[0]
+
+        self.assertIn('id="powerButton"', dashboard)
+        self.assertIn('id="tempDown"', dashboard)
+        self.assertIn('id="tempUp"', dashboard)
+        self.assertIn('data-theme="dark"', dashboard)
+        self.assertIn("quadraticCurveTo", dashboard)
+        self.assertNotIn("mode_heat", dashboard)
 
 
 class StorageTests(unittest.TestCase):

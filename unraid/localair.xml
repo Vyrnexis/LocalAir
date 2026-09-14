@@ -17,8 +17,7 @@ Features:
 - Local Tuya temperature and humidity polling
 - Web dashboard with temperature/humidity history graph
 - SQLite history stored in appdata
-- Learned NEC IR AC controls
-- Sensibo/remote IR observation for state sync
+- Olimpia Splendid PIU14 cloud controls
 - Sync Power button that corrects app state without sending IR
 
 This container uses host networking so it can reliably talk to Tuya LAN devices.
@@ -33,7 +32,7 @@ This container uses host networking so it can reliably talk to Tuya LAN devices.
   <DateInstalled/>
   <DonateText/>
   <DonateLink/>
-  <Requires>Before first start, create /mnt/user/appdata/localair/config.toml from config.example.toml and set your Tuya device local key.</Requires>
+  <Requires>Before first start, create /mnt/user/appdata/localair/config.toml from config.example.toml and set the Tuya local and cloud details.</Requires>
   <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/localair" Mode="rw" Description="Stores config.toml, localair.db, and unknown-ir.log." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/localair</Config>
   <Config Name="Web UI Port" Target="LOCALAIR_PORT" Default="8787" Mode="" Description="Port LocalAIR listens on. Host networking is used, so normal Docker port mappings are not used." Type="Variable" Display="always" Required="true" Mask="false">8787</Config>
   <Config Name="Timezone" Target="TZ" Default="Etc/UTC" Mode="" Description="Container timezone used for graph labels and timestamps. Example: Australia/Perth" Type="Variable" Display="always" Required="true" Mask="false">Etc/UTC</Config>

@@ -6,6 +6,12 @@ local_key = "REPLACE_WITH_YOUR_LOCAL_KEY"
 protocol_version = 3.5
 poll_interval_seconds = 30
 
+[tuya_cloud]
+region = "eu"
+api_key = "REPLACE_WITH_YOUR_TUYA_API_KEY"
+api_secret = "REPLACE_WITH_YOUR_TUYA_API_SECRET"
+aircon_device_id = "REPLACE_WITH_YOUR_VIRTUAL_AC_DEVICE_ID"
+
 [server]
 host = "0.0.0.0"
 port = 8787
@@ -13,30 +19,13 @@ port = 8787
 [history]
 retention_days = 31
 
-# NEC address and one-byte command values for the learned remote.
+# Legacy NEC remote codes are retained only for observing old remotes.
 [ir]
 address = 0x08E7
 
 [ir.commands]
-power = 0x00
-timer = 0x80
-unit_cf = 0x20
-swing = 0x60
-mode_fan = 0x10
-mode_cool = 0x28
-mode_dry = 0x30
-mode_heat = 0x90
-temp_up = 0xA8
-temp_down = 0xB0
-fan_low = 0x50
-fan_mid = 0x70
-fan_high = 0x68
 
-# Optional starting point for assumed state tracking.
+# Starting point for assumed PIU14 state tracking.
 [ac_state]
-power = "on"
-mode = "heat"
-temperature = "25"
-fan = "mid"
-swing = "off"
-# timer = "off"
+power = "off"
+temperature = "24"

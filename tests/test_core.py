@@ -5,14 +5,17 @@ import tempfile
 import unittest
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from unittest.mock import call, patch
+from unittest.mock import Mock, patch
 
 from src.config import AppConfig, load_config, save_config
 from src.device import (
     ConnectionStatus,
+    DeviceMonitor,
     DeviceReading,
     TuyaDevice,
     decide_climate,
+    load_local_ir_code,
+    local_ir_instruction,
     update_ac_state,
 )
 from src.storage import LocalAirStore
@@ -103,46 +106,66 @@ class DeviceTests(unittest.TestCase):
         )
 
     def test_unknown_ir_command_is_rejected(self) -> None:
-        result = TuyaDevice().send_ir(
-            AppConfig(local_key="not-a-real-key"),
-            "../../unexpected",
+        with self.assertRaisesRegex(ValueError, "Unknown IR command"):
+            local_ir_instruction("../../unexpected", {"temperature": "22"})
+
+    def test_missing_temperature_has_clear_error(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Sync the current temperature"):
+            local_ir_instruction("power", {"power": "off"})
+
+    # Map manual and climate actions to complete-state learned frames.
+    def test_piu14_local_instructions(self) -> None:
+        power, power_message = local_ir_instruction(
+            "power", {"power": "off", "temperature": "24"}
         )
-
-        self.assertFalse(result.ok)
-        self.assertEqual(result.message, "Unknown IR command.")
-
-    def test_missing_cloud_details_have_clear_error(self) -> None:
-        result = TuyaDevice().send_ir(
-            AppConfig(local_key="not-a-real-key"),
-            "power",
-        )
-
-        self.assertFalse(result.ok)
-        self.assertIn("Tuya cloud details", result.message)
-
-    # Verify PIU14 controls use its cloud function names and direct temperature.
-    def test_piu14_cloud_instructions(self) -> None:
-        power, power_message = TuyaDevice._cloud_instruction(
-            "power", {"power": "off"}
-        )
-        temperature, temperature_message = TuyaDevice._cloud_instruction(
+        temperature, temperature_message = local_ir_instruction(
             "temp_up", {"temperature": "29"}
         )
+        climate, climate_message = local_ir_instruction(
+            "climate_on", {}, 16
+        )
+        power_off, _message = local_ir_instruction(
+            "power", {"power": "on"}
+        )
 
-        self.assertEqual(power, {"code": "power", "value": 1})
-        self.assertEqual(power_message, "Power turned on.")
-        self.assertEqual(temperature, {"code": "temp", "value": 30})
+        self.assertEqual(power, "cold 24°C auto")
+        self.assertEqual(power_message, "Power turned on at 24°C.")
+        self.assertEqual(temperature, "cold 30°C auto")
         self.assertEqual(temperature_message, "Temperature set to 30°C.")
+        self.assertEqual(climate, "cold 16°C auto")
+        self.assertEqual(climate_message, "Climate control cooling at 16°C.")
+        self.assertEqual(power_off, "Power Off")
+
+    # Ensure every temperature and power-off frame is bundled and valid.
+    def test_piu14_profile_is_complete(self) -> None:
+        for temperature in range(16, 31):
+            self.assertGreater(
+                len(load_local_ir_code(f"cold {temperature}°C auto")),
+                100,
+            )
+        self.assertGreater(len(load_local_ir_code("Power Off")), 100)
+
+    # Convert and send a learned frame locally without exposing its value.
+    def test_local_ir_transmission(self) -> None:
+        device = Mock()
+        with patch("src.device.time.sleep") as sleep:
+            DeviceMonitor._send_local_ir(device, "cold 16°C auto")
+
+        device.study_end.assert_called_once_with()
+        device.send_button.assert_called_once()
+        self.assertTrue(device.send_button.call_args.args[0])
+        self.assertEqual(sleep.call_args_list[0].args, (0.2,))
+        self.assertEqual(sleep.call_args_list[1].args, (0.5,))
 
     # Keep repeated temperature presses inside the PIU14's supported range.
     def test_temperature_state_is_clamped(self) -> None:
         self.assertEqual(
             update_ac_state({"temperature": "30"}, "temp_up"),
-            {"temperature": "30"},
+            {"temperature": "30", "power": "on"},
         )
         self.assertEqual(
             update_ac_state({"temperature": "16"}, "temp_down"),
-            {"temperature": "16"},
+            {"temperature": "16", "power": "on"},
         )
 
     def test_nec_frame_uses_wire_order_and_inverse_byte(self) -> None:
@@ -164,7 +187,7 @@ class DeviceTests(unittest.TestCase):
         self.assertEqual(
             state,
             {
-                "power": "off",
+                "power": "on",
                 "mode": "cool",
                 "temperature": "23",
                 "fan": "high",
@@ -210,43 +233,6 @@ class DeviceTests(unittest.TestCase):
             ).desired_power,
             "off",
         )
-
-    # Send the setpoint before explicit power-on through the virtual AC.
-    def test_climate_on_sends_setpoint_and_power(self) -> None:
-        config = AppConfig(
-            cloud_api_key="key",
-            cloud_api_secret="secret",
-            aircon_device_id="aircon",
-            aircon_temperature=16,
-        )
-        with patch("tinytuya.Cloud") as cloud_class:
-            cloud_class.return_value.cloudrequest.return_value = {
-                "success": True
-            }
-
-            result = TuyaDevice().set_climate(config, True)
-
-        self.assertTrue(result.ok)
-        url = (
-            f"/v2.0/infrareds/{config.device_id}/"
-            "air-conditioners/aircon/command"
-        )
-        self.assertEqual(
-            cloud_class.return_value.cloudrequest.call_args_list,
-            [
-                call(
-                    url,
-                    action="POST",
-                    post={"code": "temp", "value": 16},
-                ),
-                call(
-                    url,
-                    action="POST",
-                    post={"code": "power", "value": 1},
-                ),
-            ],
-        )
-
 
 class WebUiTests(unittest.TestCase):
     # Keep the dependency-free dashboard focused on PIU14 and its requested UI.

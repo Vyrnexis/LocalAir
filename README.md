@@ -11,8 +11,9 @@ It runs on your LAN and gives you a local dashboard for:
 - assumed AC state tracking
 - Sync Power state correction
 
-Sensor readings stay local. PIU14 control uses the Tuya cloud virtual remote
-because this air conditioner does not use the old Kogan NEC command format.
+Sensor readings and PIU14 control stay on the local network. The bundled PIU14
+profile contains learned complete-state IR frames for cooling at 16–30 °C and
+power off.
 
 You need these local device details:
 
@@ -20,9 +21,6 @@ You need these local device details:
 - device ID
 - local key
 - protocol version
-
-You also need the Tuya cloud region, API key, API secret, and the virtual
-air-conditioner device ID shown as `Air` by the TinyTuya wizard.
 
 ## Supported devices
 
@@ -50,9 +48,8 @@ DP 1 = temperature, divide by 10
 DP 2 = humidity percentage
 ```
 
-Power and temperature control targets the Olimpia Splendid PIU14 virtual AC
-remote configured in Smart Life. The cloud project must remain active for
-control commands.
+Power and temperature control targets the Olimpia Splendid PIU14 through the
+physical IR blaster on the LAN. Tuya Cloud is not required for normal use.
 
 ## What you need before first start
 
@@ -64,16 +61,6 @@ ip_address = "192.168.1.145"
 device_id = "YOUR_DEVICE_ID"
 local_key = "YOUR_LOCAL_KEY"
 protocol_version = 3.5
-```
-
-The control settings are:
-
-```toml
-[tuya_cloud]
-region = "eu"
-api_key = "YOUR_TUYA_API_KEY"
-api_secret = "YOUR_TUYA_API_SECRET"
-aircon_device_id = "YOUR_VIRTUAL_AC_DEVICE_ID"
 ```
 
 Daily climate control is disabled until enabled in Settings. Its defaults cool
@@ -359,12 +346,6 @@ local_key = "REPLACE_WITH_YOUR_LOCAL_KEY"
 protocol_version = 3.5
 poll_interval_seconds = 30
 
-[tuya_cloud]
-region = "eu"
-api_key = "REPLACE_WITH_YOUR_TUYA_API_KEY"
-api_secret = "REPLACE_WITH_YOUR_TUYA_API_SECRET"
-aircon_device_id = "REPLACE_WITH_YOUR_VIRTUAL_AC_DEVICE_ID"
-
 [climate]
 enabled = false
 start_time = "10:00"
@@ -430,9 +411,9 @@ Settings page:
 
 ## AC state behavior
 
-LocalAIR sends `power` and direct 16–30 °C `temp` commands through Tuya's
-infrared air-conditioner API. Because IR is one-way, LocalAIR
-tracks an assumed state. It updates that state when:
+LocalAIR sends the learned 16–30 °C complete-state frames and Power Off command
+directly to the IR blaster over the LAN. Because IR is one-way, LocalAIR tracks
+an assumed state. It updates that state when:
 
 - LocalAIR successfully sends an AC command
 - you press Sync Power

@@ -27,8 +27,9 @@ from .device import (
     DeviceMonitor,
     DeviceReading,
     IR_COMMANDS,
-    TuyaDevice,
+    PIU14_CODES_PATH,
     decide_climate,
+    local_ir_instruction,
     update_ac_state,
 )
 from .storage import LocalAirStore
@@ -61,7 +62,6 @@ class LocalAirService:
             "Disabled", "Automation is off.", None
         )
         self.last_climate_attempt: tuple[str, float] | None = None
-        self.cloud_lock = threading.Lock()
         self.climate_event = threading.Event()
         self.stopping = False
         self.climate_thread = threading.Thread(
@@ -93,13 +93,7 @@ class LocalAirService:
             config = self.config
             last_ir = self.last_ir
             climate = self.climate
-        cloud_ready = all(
-            (
-                config.cloud_api_key,
-                config.cloud_api_secret,
-                config.aircon_device_id,
-            )
-        )
+        local_ir_ready = bool(config.local_key and PIU14_CODES_PATH.is_file())
         return {
             "brand": "LocalAIR",
             "device": {
@@ -128,7 +122,7 @@ class LocalAirService:
                 "aircon_temperature": config.aircon_temperature,
             },
             "ir_commands": {
-                name: cloud_ready
+                name: local_ir_ready
                 for name in sorted(IR_COMMANDS)
             },
             "last_result": asdict(result) if result else None,
@@ -145,8 +139,10 @@ class LocalAirService:
             raise ValueError("Unknown IR command.")
         with self.lock:
             config = self.config
-        with self.cloud_lock:
-            result = TuyaDevice().send_ir(config, command)
+        key_name, message = local_ir_instruction(command, config.ac_state)
+        result = self.monitor.send_ir(key_name)
+        if result.ok:
+            result = CommandResult(True, message)
         self._on_result(result)
         if result.ok:
             self._on_ir(command, "localair")
@@ -191,18 +187,6 @@ class LocalAirService:
                     "poll_interval_seconds",
                     current.poll_interval_seconds,
                 )
-            ),
-            cloud_region=data.get("cloud_region", current.cloud_region),
-            cloud_api_key=(
-                data.get("cloud_api_key", "").strip()
-                or current.cloud_api_key
-            ),
-            cloud_api_secret=(
-                data.get("cloud_api_secret", "").strip()
-                or current.cloud_api_secret
-            ),
-            aircon_device_id=data.get(
-                "aircon_device_id", current.aircon_device_id
             ),
             climate_enabled=data.get("climate_enabled") == "on",
             climate_start=data.get("climate_start", current.climate_start),
@@ -284,7 +268,7 @@ class LocalAirService:
             self.climate_event.wait(10)
             self.climate_event.clear()
 
-    # Apply only state transitions and retry failed cloud commands after one minute.
+    # Apply only state transitions and retry failed local commands after one minute.
     def _evaluate_climate(self) -> None:
         now = datetime.now().astimezone()
         with self.lock:
@@ -307,10 +291,14 @@ class LocalAirService:
                 return
         with self.lock:
             self.last_climate_attempt = (command, time.monotonic())
-        with self.cloud_lock:
-            result = TuyaDevice().set_climate(
-                config, decision.desired_power == "on"
-            )
+        key_name, message = local_ir_instruction(
+            command,
+            config.ac_state,
+            config.aircon_temperature,
+        )
+        result = self.monitor.send_ir(key_name)
+        if result.ok:
+            result = CommandResult(True, message)
         self._on_result(result)
         if result.ok:
             self._on_ir(command, "climate")
@@ -373,8 +361,6 @@ def settings() -> str:
         server_host=html_escape(config.server_host),
         server_port=config.server_port,
         history_retention_days=config.history_retention_days,
-        cloud_region=html_escape(config.cloud_region),
-        aircon_device_id=html_escape(config.aircon_device_id),
         climate_enabled="checked" if config.climate_enabled else "",
         climate_start=config.climate_start,
         climate_end=config.climate_end,
@@ -695,7 +681,7 @@ DASHBOARD_HTML = """
       </div>
       <div class="controls">
         <div class="power-control">
-          <div><div class="eyebrow">Power</div><p class="muted">Cloud-connected air conditioner</p></div>
+          <div><div class="eyebrow">Power</div><p class="muted">Local network control</p></div>
           <button id="powerButton" class="power-button" onclick="sendIR('power')">Turn on</button>
         </div>
         <div class="temperature-control">
@@ -1327,7 +1313,7 @@ SETTINGS_HTML = """
 <main>
   <header><div><h1>Settings</h1><div class="muted">LocalAIR and PIU14 connection details</div></div><a href="/">Back</a></header>
   <div class="card">
-    <p class="muted">Keys and secrets are saved to config only and are not printed by LocalAIR.</p>
+    <p class="muted">The local key is saved to config and is not printed by LocalAIR.</p>
     <form class="form-grid" method="post">
       <h2>Local sensor</h2>
       <div class="field"><label>IP address</label><input name="ip_address" value="{ip_address}" required></div>
@@ -1335,11 +1321,6 @@ SETTINGS_HTML = """
       <div class="field"><label>Local key</label><input name="local_key" type="password" value="" placeholder="Leave blank to keep current key"></div>
       <div class="field"><label>Protocol version</label><input name="protocol_version" value="{protocol_version}" required></div>
       <div class="field wide"><label>Poll interval seconds</label><input name="poll_interval_seconds" type="number" min="5" max="3600" value="{poll_interval_seconds}" required></div>
-      <h2>Olimpia Splendid PIU14</h2>
-      <div class="field"><label>Tuya cloud region</label><input name="cloud_region" value="{cloud_region}" required></div>
-      <div class="field"><label>Virtual AC device ID</label><input name="aircon_device_id" value="{aircon_device_id}" required></div>
-      <div class="field"><label>Tuya cloud API key</label><input name="cloud_api_key" type="password" value="" placeholder="Leave blank to keep current key"></div>
-      <div class="field"><label>Tuya cloud API secret</label><input name="cloud_api_secret" type="password" value="" placeholder="Leave blank to keep current secret"></div>
       <h2>Climate schedule</h2>
       <label class="toggle-row"><span><strong>Enable climate control</strong><span>Automatically cool only during the configured daily schedule.</span></span><input name="climate_enabled" type="checkbox" {climate_enabled}></label>
       <div class="field"><label>Start time</label><input name="climate_start" type="time" value="{climate_start}" required></div>

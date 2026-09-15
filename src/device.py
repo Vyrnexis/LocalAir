@@ -1,10 +1,12 @@
-"""Read the Tuya sensor and control the configured Tuya cloud AC."""
+"""Read the Tuya sensor and control the PIU14 over the local network."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+import json
+from pathlib import Path
 import queue
 import threading
 import time
@@ -18,6 +20,7 @@ IR_COMMANDS = {
     "temp_up",
     "temp_down",
 }
+PIU14_CODES_PATH = Path(__file__).with_name("piu14_ir_codes.json")
 
 
 class ConnectionStatus(StrEnum):
@@ -130,6 +133,7 @@ def update_ac_state(state: dict[str, str], command: str) -> dict[str, str]:
             updated["temperature"] = str(
                 min(30, max(16, temperature + change))
             )
+            updated["power"] = "on"
     elif command in {"swing", "timer"}:
         current = updated.get(command)
         if current in {"on", "off"}:
@@ -137,8 +141,61 @@ def update_ac_state(state: dict[str, str], command: str) -> dict[str, str]:
     return updated
 
 
+# Select the complete-state PIU14 frame and success message for one action.
+def local_ir_instruction(
+    command: str,
+    state: dict[str, str],
+    climate_temperature: int = 16,
+) -> tuple[str, str]:
+    if command == "climate_off" or (
+        command == "power" and state.get("power") == "on"
+    ):
+        message = (
+            "Climate control turned the AC off."
+            if command == "climate_off"
+            else "Power turned off."
+        )
+        return "Power Off", message
+
+    if command == "climate_on":
+        temperature = climate_temperature
+        message = f"Climate control cooling at {temperature}°C."
+    else:
+        try:
+            temperature = int(state["temperature"])
+        except (KeyError, ValueError):
+            raise ValueError(
+                "Sync the current temperature before controlling the AC."
+            ) from None
+        if command in {"temp_up", "temp_down"}:
+            temperature += 1 if command == "temp_up" else -1
+            temperature = min(30, max(16, temperature))
+            message = f"Temperature set to {temperature}°C."
+        elif command == "power":
+            message = f"Power turned on at {temperature}°C."
+        else:
+            raise ValueError("Unknown IR command.")
+
+    if not 16 <= temperature <= 30:
+        raise ValueError("PIU14 temperature must be between 16°C and 30°C.")
+    return f"cold {temperature}°C auto", message
+
+
+# Load one bundled PIU14 code without exposing the raw signal in errors.
+def load_local_ir_code(key_name: str) -> str:
+    try:
+        codes = json.loads(PIU14_CODES_PATH.read_text(encoding="utf-8"))
+        code = codes[key_name]
+        if not isinstance(code, str) or not code or len(code) % 2:
+            raise ValueError
+        bytes.fromhex(code)
+        return code
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        raise ValueError(f"Local IR code is unavailable for {key_name}.") from None
+
+
 class TuyaDevice:
-    """TinyTuya wrapper for this temperature/humidity IR device."""
+    """TinyTuya wrapper for reading the temperature/humidity device."""
 
     def get_status(self, config: AppConfig) -> DeviceReading:
         now = datetime.now().astimezone()
@@ -176,114 +233,6 @@ class TuyaDevice:
                 ConnectionStatus.ERROR,
                 f"Could not read device ({type(exc).__name__}).",
             )
-
-    def send_ir(self, config: AppConfig, command: str) -> CommandResult:
-        if command not in IR_COMMANDS:
-            return CommandResult(False, "Unknown IR command.")
-        try:
-            instruction, message = self._cloud_instruction(
-                command, config.ac_state
-            )
-        except ValueError as exc:
-            return CommandResult(False, str(exc))
-        return self._send_cloud(config, [instruction], message)
-
-    # Send an explicit fail-safe power state for climate automation.
-    def set_climate(self, config: AppConfig, turn_on: bool) -> CommandResult:
-        if turn_on:
-            instructions = [
-                {"code": "temp", "value": config.aircon_temperature},
-                {"code": "power", "value": 1},
-            ]
-            message = (
-                f"Climate control cooling at {config.aircon_temperature}°C."
-            )
-        else:
-            instructions = [{"code": "power", "value": 0}]
-            message = "Climate control turned the AC off."
-        return self._send_cloud(config, instructions, message)
-
-    # Send validated instructions through the configured Tuya cloud project.
-    @staticmethod
-    def _send_cloud(
-        config: AppConfig,
-        instructions: list[dict[str, Any]],
-        message: str,
-    ) -> CommandResult:
-        if not all(
-            (
-                config.cloud_api_key,
-                config.cloud_api_secret,
-                config.aircon_device_id,
-            )
-        ):
-            return CommandResult(
-                False, "Open Settings and enter the Tuya cloud details."
-            )
-        try:
-            import tinytuya
-
-            cloud = tinytuya.Cloud(
-                apiRegion=config.cloud_region,
-                apiKey=config.cloud_api_key,
-                apiSecret=config.cloud_api_secret,
-                apiDeviceID=config.device_id,
-            )
-            url = (
-                f"/v2.0/infrareds/{config.device_id}/air-conditioners/"
-                f"{config.aircon_device_id}/command"
-            )
-            for instruction in instructions:
-                response = cloud.cloudrequest(
-                    url,
-                    action="POST",
-                    post=instruction,
-                )
-                if (
-                    not isinstance(response, dict)
-                    or not response.get("success")
-                    or response.get("result") is False
-                ):
-                    reason = (
-                        str(response.get("msg", "")).strip()
-                        if isinstance(response, dict)
-                        else ""
-                    )
-                    return CommandResult(
-                        False,
-                        "Tuya rejected the IR command."
-                        + (f" {reason}" if reason else ""),
-                    )
-            return CommandResult(True, message)
-        except ImportError:
-            return CommandResult(False, "TinyTuya is not installed.")
-        except Exception as exc:
-            return CommandResult(
-                False, f"Could not send AC command ({type(exc).__name__})."
-            )
-
-    # Build the PIU14 virtual remote instruction from LocalAIR's assumed state.
-    @staticmethod
-    def _cloud_instruction(
-        command: str, state: dict[str, str]
-    ) -> tuple[dict[str, Any], str]:
-        if command == "power":
-            turn_on = state.get("power") != "on"
-            power = "on" if turn_on else "off"
-            return {
-                "code": "power",
-                "value": 1 if turn_on else 0,
-            }, f"Power turned {power}."
-        try:
-            current = int(state["temperature"])
-        except (KeyError, ValueError):
-            raise ValueError(
-                "Sync the current temperature before changing it."
-            ) from None
-        change = 1 if command == "temp_up" else -1
-        temperature = min(30, max(16, current + change))
-        message = f"Temperature set to {temperature}°C."
-        return {"code": "temp", "value": temperature}, message
 
     @staticmethod
     def _nec_frame(address: int, command: int) -> int:
@@ -388,7 +337,9 @@ class DeviceMonitor:
         self.config = config
         self.on_reading = on_reading
         self.on_ir = on_ir
-        self.actions: queue.Queue[tuple[str, str | None]] = queue.Queue()
+        self.actions: queue.Queue[
+            tuple[str, str | None, queue.Queue[CommandResult] | None]
+        ] = queue.Queue()
         self.stop_event = threading.Event()
         self.last_unknown: tuple[str, float] | None = None
         self.thread = threading.Thread(
@@ -402,15 +353,24 @@ class DeviceMonitor:
 
     def stop(self) -> None:
         self.stop_event.set()
-        self.actions.put(("stop", None))
+        self.actions.put(("stop", None, None))
         self.thread.join(timeout=3)
 
     def update_config(self, config: AppConfig) -> None:
         self.config = config
-        self.actions.put(("reconnect", None))
+        self.actions.put(("reconnect", None, None))
 
     def refresh(self) -> None:
-        self.actions.put(("refresh", None))
+        self.actions.put(("refresh", None, None))
+
+    # Queue a learned IR frame on the monitor-owned device connection.
+    def send_ir(self, key_name: str) -> CommandResult:
+        result_queue: queue.Queue[CommandResult] = queue.Queue(maxsize=1)
+        self.actions.put(("send", key_name, result_queue))
+        try:
+            return result_queue.get(timeout=10)
+        except queue.Empty:
+            return CommandResult(False, "Local IR device did not respond.")
 
     def _run(self) -> None:
         while not self.stop_event.is_set():
@@ -450,14 +410,30 @@ class DeviceMonitor:
         try:
             while not self.stop_event.is_set():
                 try:
-                    action, _command = self.actions.get_nowait()
+                    action, command, result_queue = self.actions.get_nowait()
                 except queue.Empty:
-                    action, command = "", None
+                    action, command, result_queue = "", None, None
 
                 if action in {"stop", "reconnect"}:
                     return
                 if action == "refresh":
                     next_poll = min(next_poll, time.monotonic() + 0.2)
+                if action == "send" and command and result_queue:
+                    try:
+                        self._send_local_ir(device, command)
+                        result = CommandResult(True, "Local IR command sent.")
+                    except Exception as exc:
+                        result = CommandResult(
+                            False,
+                            f"Could not send local IR command "
+                            f"({type(exc).__name__}).",
+                        )
+                    try:
+                        self._start_learning(device)
+                    except Exception:
+                        pass
+                    result_queue.put(result)
+                    continue
                 if time.monotonic() >= next_poll:
                     if not self._poll_sensor(device, config):
                         return
@@ -491,6 +467,22 @@ class DeviceMonitor:
         time.sleep(0.2)
         device.study_start()
         time.sleep(0.2)
+
+    # Convert and transmit one bundled complete-state PIU14 frame.
+    @staticmethod
+    def _send_local_ir(device, key_name: str) -> None:
+        from tinytuya.Contrib.IRRemoteControlDevice import (
+            IRRemoteControlDevice,
+        )
+
+        code = load_local_ir_code(key_name)
+        signal = IRRemoteControlDevice.pulses_to_base64(
+            IRRemoteControlDevice.hex_to_pulses(code)
+        )
+        device.study_end()
+        time.sleep(0.2)
+        device.send_button(signal)
+        time.sleep(0.5)
 
     def _handle_ir_response(self, response: Any, config: AppConfig) -> bool:
         if not isinstance(response, dict) or not isinstance(

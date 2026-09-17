@@ -205,6 +205,7 @@ class LocalAirStore:
 
     def history(self, range_name: str) -> list[dict]:
         hours, bucket_minutes = {
+            "1h": (1, 1),
             "24h": (24, 5),
             "7d": (24 * 7, 30),
             "30d": (24 * 30, 120),
@@ -257,6 +258,7 @@ class LocalAirStore:
     # Return successful AC commands within the selected chart window.
     def history_events(self, range_name: str) -> list[dict]:
         hours = {
+            "1h": 1,
             "24h": 24,
             "7d": 24 * 7,
             "30d": 24 * 30,

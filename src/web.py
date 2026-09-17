@@ -734,6 +734,7 @@ DASHBOARD_HTML = """
             <span><i class="humidity-line"></i>Humidity</span>
           </div>
           <select id="range" onchange="loadHistory()">
+            <option value="1h">1 hour</option>
             <option value="24h" selected>24 hours</option>
             <option value="7d">7 days</option>
             <option value="30d">30 days</option>
@@ -1014,7 +1015,7 @@ function drawChart(points, range, events = []) {
   const humidityScale = axisScale(Math.min(...humidity), Math.max(...humidity), 10, "humidity");
   const dates = points.map(p => new Date(p.timestamp));
   const endTime = Date.now();
-  const duration = {"24h": 86400000, "7d": 604800000, "30d": 2592000000}[range] || 86400000;
+  const duration = {"1h": 3600000, "24h": 86400000, "7d": 604800000, "30d": 2592000000}[range] || 86400000;
   const startTime = endTime - duration;
   const timeSpan = Math.max(1, endTime - startTime);
 
@@ -1132,7 +1133,7 @@ function drawChart(points, range, events = []) {
   function timeTicks(range, start, end) {
     const ticks = [];
     const startMs = start.getTime(), endMs = end.getTime();
-    const stepMinutes = { "24h": 180, "7d": 1440, "30d": 10080 }[range] || 180;
+    const stepMinutes = { "1h": 10, "24h": 180, "7d": 1440, "30d": 10080 }[range] || 180;
     const stepMs = stepMinutes * 60 * 1000;
     const first = Math.ceil(startMs / stepMs) * stepMs;
 

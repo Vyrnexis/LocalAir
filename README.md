@@ -392,7 +392,7 @@ The dashboard includes:
 - fixed-window history scales with climate thresholds and AC event tooltips
 - automatic, manual, and error activity filters
 - explicit local-only assumed power correction
-- temperature/humidity history graph with 24-hour, 7-day, and 30-day views
+- temperature/humidity history graph with 1-hour, 24-hour, 7-day, and 30-day views
 - recent activity list with IR events and device errors/disconnects
 - settings page
 

@@ -251,6 +251,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("quadraticCurveTo", dashboard)
         self.assertIn('id="automationState"', dashboard)
         self.assertIn('id="chartTooltip"', dashboard)
+        self.assertIn('<option value="1h">1 hour</option>', dashboard)
         self.assertIn("/api/sync/power/${power}", dashboard)
         self.assertNotIn("mode_heat", dashboard)
 
@@ -284,12 +285,31 @@ class StorageTests(unittest.TestCase):
                 datetime.fromisoformat(points[0]["timestamp"]).tzinfo
             )
 
-    def test_removed_ranges_fall_back_to_daily(self) -> None:
+    def test_hourly_history_excludes_older_readings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = LocalAirStore(Path(directory) / "localair.db", 31)
+            recent = datetime.now().astimezone() - timedelta(minutes=30)
+            old = recent - timedelta(hours=1)
+            with store._connect() as db:
+                db.executemany(
+                    """
+                    INSERT INTO sensor_readings (
+                      timestamp, temperature_c, humidity_percent, status
+                    ) VALUES (?, 21.5, 48, 'Connected')
+                    """,
+                    [
+                        (old.isoformat(timespec="seconds"),),
+                        (recent.isoformat(timespec="seconds"),),
+                    ],
+                )
 
-            self.assertEqual(store.history("1h"), [])
-            self.assertEqual(store.history("6h"), [])
+            points = store.history("1h")
+
+            self.assertEqual(len(points), 1)
+            self.assertEqual(
+                datetime.fromisoformat(points[0]["timestamp"]).minute,
+                recent.minute,
+            )
 
     def test_history_handles_mixed_timezone_offsets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

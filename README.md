@@ -1,98 +1,87 @@
 # LocalAIR
 
-LocalAIR is an always-on Docker/Unraid web app for a local Tuya IR
-temperature/humidity device.
+[![Test and publish image](https://github.com/Vyrnexis/LocalAir/actions/workflows/docker.yml/badge.svg)](https://github.com/Vyrnexis/LocalAir/actions/workflows/docker.yml)
 
-It runs on your LAN and gives you a local dashboard for:
+A small, always-on web app that watches the temperature in a room and switches
+an Olimpia Splendid PIU14 air conditioner on and off to keep it in a comfort
+band — entirely on your local network, with no cloud account involved.
 
-- temperature and humidity monitoring
-- SQLite-backed history graphs
-- Olimpia Splendid PIU14 power and 16–30 °C controls
-- assumed AC state tracking
-- Sync Power state correction
+It reads a Tuya IR temperature/humidity sensor over the LAN and uses the same
+device's IR blaster to send commands to the AC. It runs as a Docker container
+and is built to sit on an Unraid server.
 
-Sensor readings and PIU14 control stay on the local network. The bundled PIU14
-profile contains learned complete-state IR frames for cooling at 16–30 °C and
-power off.
+![LocalAIR dashboard](screenshots/dashboard-dark.png)
 
-You need these local device details:
+## What it does
 
-- device IP address
-- device ID
-- local key
-- protocol version
+- **Shows the room at a glance.** Temperature, humidity, where the room sits
+  against your comfort band, and a timeline of when the AC ran today.
+- **Cools on a schedule.** During the hours you choose, it turns the AC on when
+  the room gets warm and off once it has cooled. When the schedule ends it turns
+  the AC off once and hands control back to you.
+- **Lets you control the AC directly.** Power and 16–30 °C from any browser on
+  your network, phone included.
+- **Keeps history.** Linked temperature and humidity charts for the last hour,
+  day, week or month, with the comfort band, schedule and AC running periods
+  marked. Readings are kept for 31 days by default.
+- **Stays local.** Sensor readings and AC commands never leave your network.
+  The web UI, fonts included, is served by LocalAIR itself.
 
-## Supported devices
+<table>
+  <tr>
+    <td width="66%"><img src="screenshots/dashboard-light.png" alt="Dashboard in the light theme"></td>
+    <td><img src="screenshots/phone-dashboard.png" alt="Dashboard on a phone"></td>
+  </tr>
+  <tr>
+    <td><img src="screenshots/settings.png" alt="Settings page"></td>
+    <td><img src="screenshots/phone-settings.png" alt="Settings on a phone"></td>
+  </tr>
+</table>
 
-Temperature and humidity are read from a Tuya IR temperature/humidity remote
-like:
+## How automatic cooling works
+
+With the defaults — schedule 10:00 to 15:30, on at 24 °C, off at 22 °C, AC set
+to 16 °C:
+
+| When | What LocalAIR does |
+| --- | --- |
+| Before 10:00 | Nothing. The AC is yours to control. |
+| 10:00 – 15:30, room reaches 24 °C | Turns the AC on, cooling at 16 °C. |
+| 10:00 – 15:30, room drops to 22 °C | Turns the AC off. |
+| 10:00 – 15:30, between 22 and 24 °C | Leaves the AC as it is. |
+| 10:00 – 15:30, no sensor reading for 2 minutes | Turns the AC off until readings return. |
+| 15:30 | Turns the AC off once. |
+| After 15:30 | Nothing. The AC is yours to control again. |
+
+Automatic cooling is off until you switch it on, either on the dashboard or in
+Settings. Inside the schedule it may override manual changes when the room
+crosses a threshold; outside the schedule it never does.
+
+IR is one-way, so LocalAIR can't ask the AC what it's doing. It keeps track of
+the state it last sent. If someone uses the AC's own remote, use
+**Mark it as on / off** on the dashboard to correct LocalAIR without sending a
+command.
+
+## What you need
+
+**A Tuya IR temperature/humidity sensor** that supports Tuya's local protocol.
+LocalAIR was developed with this device (listing names change, so the
+important part is local protocol support and the data points below):
 
 ```text
-My AC / Tuya IR Temp Humidity Remote
+"My AC / Tuya IR Temp Humidity Remote"
+Amazon Australia, ASIN B0CP775PDK — https://www.amazon.com.au/dp/B0CP775PDK
+
+DP 1 = temperature × 10
+DP 2 = humidity %
 ```
 
-The project was developed and tested with an Amazon Australia device listing:
+**An Olimpia Splendid PIU14.** LocalAIR ships with learned IR codes for this
+unit (cooling at 16–30 °C, and power off).
 
-```text
-ASIN: B0CP775PDK
-https://www.amazon.com.au/dp/B0CP775PDK
-```
-
-Listings for these Tuya devices can change names over time, so the important
-technical details are the Tuya local protocol support and the DPS mapping below.
-
-Known DPS mapping:
-
-```text
-DP 1 = temperature, divide by 10
-DP 2 = humidity percentage
-```
-
-Power and temperature control targets the Olimpia Splendid PIU14 through the
-physical IR blaster on the LAN. Tuya Cloud is not required for normal use.
-
-## What you need before first start
-
-You need these Tuya local-control values:
-
-```toml
-[device]
-ip_address = "192.168.1.145"
-device_id = "YOUR_DEVICE_ID"
-local_key = "YOUR_LOCAL_KEY"
-protocol_version = 3.5
-```
-
-Daily climate control is disabled until enabled in Settings. Its defaults cool
-at 24 °C, stop at 22 °C, and set the PIU14 to 16 °C between 10:00 and 16:00:
-
-```toml
-[climate]
-enabled = false
-start_time = "10:00"
-end_time = "16:00"
-turn_on_at = 24.0
-turn_off_at = 22.0
-aircon_temperature = 16
-sensor_timeout_seconds = 120
-```
-
-The web UI can edit settings after the app is running, but the first launch
-needs a valid `config.toml` mounted into the container.
-
-## Getting Tuya device details
-
-There are several ways to get the device ID, local key, IP address, and protocol
-version.
-
-Common options:
-
-1. Use TinyTuya's wizard on a normal PC.
-2. Use the Tuya IoT Platform with the Smart Life/Tuya app account.
-3. Check your router/DHCP leases for the device IP address.
-4. Use an existing known working TinyTuya config if you already have one.
-
-TinyTuya wizard example:
+**The sensor's local details:** IP address, device ID, local key and protocol
+version (usually 3.5). The easiest way to get them is the TinyTuya wizard on
+any computer:
 
 ```sh
 python3 -m venv .venv
@@ -100,397 +89,158 @@ python3 -m venv .venv
 .venv/bin/python -m tinytuya wizard
 ```
 
-The wizard normally helps discover devices and produce values like:
+It needs the API key and secret of a free Tuya IoT Platform project linked to
+your Smart Life / Tuya app account, and prints each device's ID, local key, IP
+and version. Your router's
+DHCP leases also show the IP. Give the sensor a fixed IP reservation so it
+doesn't move.
 
-```text
-Device ID
-Local Key
-IP Address
-Version
-```
+Keep the local key private; anyone with it can control the device.
 
-For this app, put those values into `config.toml`.
+## Install on Unraid
 
-Notes:
+GitHub Actions builds and publishes the image to
+`ghcr.io/vyrnexis/localair` on every change, so there's nothing to build.
 
-- Do not commit or publish your real local key.
-- The local key is not printed by LocalAIR.
-- The web Settings page leaves the local-key field blank; submitting a blank key
-  keeps the existing key.
+1. Open a terminal on the Unraid server and add the template:
 
-## Recommended Unraid layout
+   ```sh
+   mkdir -p /boot/config/plugins/dockerMan/templates-user
+   wget -O /boot/config/plugins/dockerMan/templates-user/my-localair.xml \
+     https://raw.githubusercontent.com/Vyrnexis/LocalAir/main/unraid/localair.xml
+   ```
 
-Use two separate folders:
+2. Go to **Docker → Add Container**, choose **LocalAIR** from the Template list.
 
-```text
-/mnt/user/appdata/localair      runtime data: config, database, logs
-/mnt/user/appdata/localAIR      cloned source repo and Docker build files
-```
+3. Set **Timezone** to yours (for example `Australia/Perth`) and click
+   **Apply**. Leave the other fields as they are.
 
-Do not delete `/mnt/user/appdata/localair` unless you intentionally want to
-remove your config and history database.
+4. Open `http://YOUR_UNRAID_IP:8787`, go to **Settings**, enter the sensor's
+   details and click **Test connection**, then **Save changes**.
 
-## Install on Unraid from a cloned repo
+Updates appear in Unraid's Docker tab; click **Update** on LocalAIR to install
+one. Your settings and history live in `/mnt/user/appdata/localair` and are
+kept across updates.
 
-Clone the repo:
+The container uses host networking so it can reach Tuya devices on the LAN.
 
-```sh
-cd /mnt/user/appdata
-git clone https://codeberg.org/Vyrnexis/localAIR.git localAIR
-cd /mnt/user/appdata/localAIR
-```
-
-Create the runtime appdata folder:
+## Install with Docker or Docker Compose
 
 ```sh
-mkdir -p /mnt/user/appdata/localair
-cp -n config.example.toml /mnt/user/appdata/localair/config.toml
-chmod 600 /mnt/user/appdata/localair/config.toml
-```
-
-Edit the config:
-
-```sh
-nano /mnt/user/appdata/localair/config.toml
-```
-
-At minimum, set:
-
-```toml
-[device]
-ip_address = "YOUR_DEVICE_IP"
-device_id = "YOUR_DEVICE_ID"
-local_key = "YOUR_LOCAL_KEY"
-protocol_version = 3.5
-```
-
-Build the local Docker image:
-
-```sh
-docker build -t localair:latest .
-```
-
-Install the local Unraid template:
-
-```sh
-mkdir -p /boot/config/plugins/dockerMan/templates-user
-
-cp /mnt/user/appdata/localAIR/unraid/localair-local.xml \
-  /boot/config/plugins/dockerMan/templates-user/my-localair.xml
-```
-
-Then in the Unraid web UI:
-
-```text
-Docker → Add Container → Template dropdown → LocalAIR
-```
-
-Confirm these template values:
-
-```text
-Repository: localair:latest
-Network Type: Host
-Appdata: /mnt/user/appdata/localair -> /data
-Web UI Port: 8787
-Timezone: your local timezone, e.g. Australia/Perth
-```
-
-Apply the template, then open:
-
-```text
-http://YOUR_UNRAID_IP:8787
-```
-
-When using the local template, Unraid may show `Version: not available` in the
-Docker tab. That is normal for locally built images. Version/update checks only
-work once the template points at a public registry image.
-
-## Manual Docker run
-
-If you do not want to use the Unraid template yet:
-
-```sh
-docker build -t localair:latest .
-
 docker run -d \
   --name localair \
   --restart unless-stopped \
   --network host \
-  --log-opt max-size=10m \
-  --log-opt max-file=3 \
-  -e LOCALAIR_DATA=/data \
-  -e LOCALAIR_PORT=8787 \
+  --log-opt max-size=10m --log-opt max-file=3 \
   -e TZ=Australia/Perth \
-  -v /mnt/user/appdata/localair:/data \
-  localair:latest
+  -v /path/to/localair-data:/data \
+  ghcr.io/vyrnexis/localair:latest
 ```
 
-Useful commands:
+Or use the included [`docker-compose.yml`](docker-compose.yml) (change the
+volume path for non-Unraid hosts), then `docker compose up -d`.
 
-```sh
-docker logs -f localair
-docker restart localair
-docker stop localair
-docker rm localair
-```
+Then open `http://YOUR_HOST_IP:8787/settings` and enter the sensor's details.
 
-Raw `docker run` works, but Unraid will not know the icon/WebUI/template
-metadata. Use the Unraid template if you want proper Unraid UI integration.
+To follow releases rather than every change on `main`, use a version tag such
+as `ghcr.io/vyrnexis/localair:1.0` instead of `latest`.
 
-## Updating on Unraid
+## Configuration
 
-From the source folder:
+Almost everything is set on the **Settings** page and saved to
+`/data/config.toml`. You can also create that file before the first start from
+[`config.example.toml`](config.example.toml).
 
-```sh
-cd /mnt/user/appdata/localAIR
-git pull
-docker build -t localair:latest .
-```
+| Section | Settings |
+| --- | --- |
+| Automatic cooling | On/off, daily start and end, turn-on and turn-off room temperatures, AC temperature while cooling, sensor timeout |
+| Sensor connection | IP address, device ID, local key, protocol version, how often to read the sensor |
+| Advanced | Days of history to keep, web host and port |
 
-If the container already exists, restarting may not use the newly built image.
-Docker containers keep using the image ID they were created from. To guarantee
-the new image is used, remove and recreate the container from the Unraid
-template:
+The local key is never shown or returned by the web UI. Leave the field blank
+to keep the saved key.
 
-```sh
-docker stop LocalAIR || docker stop localair
-docker rm LocalAIR || docker rm localair
-```
+Container environment variables:
 
-Then use:
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TZ` | `Etc/UTC` | Timezone for the schedule, charts and activity times. |
+| `LOCALAIR_PORT` | `8787` | Web port. Overrides the Settings page. |
+| `LOCALAIR_HOST` | `0.0.0.0` | Address to listen on. Overrides the Settings page. |
+| `LOCALAIR_DATA` | `/data` | Folder for the config, database and logs. |
+| `LOCALAIR_CONFIG` | `/data/config.toml` | Config file path. |
+| `LOCALAIR_DB` | `/data/localair.db` | History database path. |
+| `LOCALAIR_ACCESS_LOG` | `false` | Set to `true` to log every HTTP request while debugging. |
+
+The data folder contains:
 
 ```text
-Docker → Add Container → Template dropdown → LocalAIR → Apply
+config.toml      settings, including the local key (saved with mode 600)
+localair.db      SQLite history: readings, AC commands, AC state changes
+unknown-ir.log   IR signals the sensor saw but didn't recognise
 ```
 
-If the container was created manually with `docker run`:
+## Troubleshooting
 
-```sh
-docker stop localair
-docker rm localair
-
-docker run -d \
-  --name localair \
-  --restart unless-stopped \
-  --network host \
-  --log-opt max-size=10m \
-  --log-opt max-file=3 \
-  -e LOCALAIR_DATA=/data \
-  -e LOCALAIR_PORT=8787 \
-  -e TZ=Australia/Perth \
-  -v /mnt/user/appdata/localair:/data \
-  localair:latest
-```
-
-## Docker logs
-
-LocalAIR disables Uvicorn HTTP access logs by default. This prevents normal
-dashboard polling from constantly filling Docker logs. The Unraid templates and
-manual `docker run` examples also cap Docker logs to three 10 MB files.
-
-If you need temporary HTTP request logging for debugging, set:
-
-```text
-LOCALAIR_ACCESS_LOG=true
-```
-
-## Web Settings page
-
-After LocalAIR is running, open:
-
-```text
-http://YOUR_UNRAID_IP:8787/settings
-```
-
-The Settings page can update:
-
-- IP address
-- device ID
-- local key
-- protocol version
-- poll interval
-- web host
-- web port
-- history retention days
-- climate-control enable switch, schedule, thresholds, and PIU14 setpoint
-
-Important:
-
-- If the local-key field is left blank, LocalAIR keeps the existing saved key.
-- Changing the web port may require restarting the container.
-- The app stores changes back to `/data/config.toml`.
-- Timezone is a Docker/Unraid environment variable named `TZ`, not a web setting.
-  Set it in the Unraid template. Example: `Australia/Perth`.
-
-## Configuration file
-
-Docker uses:
-
-```text
-/data/config.toml
-```
-
-On Unraid this is:
-
-```text
-/mnt/user/appdata/localair/config.toml
-```
-
-Example:
-
-```toml
-[device]
-ip_address = "192.168.1.145"
-device_id = "bfc626075b28194ecfhor5"
-local_key = "REPLACE_WITH_YOUR_LOCAL_KEY"
-protocol_version = 3.5
-poll_interval_seconds = 30
-
-[climate]
-enabled = false
-start_time = "10:00"
-end_time = "16:00"
-turn_on_at = 24.0
-turn_off_at = 22.0
-aircon_temperature = 16
-sensor_timeout_seconds = 120
-
-[server]
-host = "0.0.0.0"
-port = 8787
-
-[history]
-retention_days = 31
-
-[ac_state]
-power = "off"
-temperature = "24"
-```
-
-## Data storage
-
-The appdata folder contains:
-
-```text
-config.toml       device/settings config
-localair.db       SQLite history database
-unknown-ir.log    unknown observed IR signals
-```
-
-SQLite stores raw sensor readings, IR events, and AC state history for 31 days by default. Larger graph ranges
-are down-sampled before being sent to the browser.
-
-## Web dashboard
-
-The dashboard includes:
-
-- connection and last-update status
-- large temperature and humidity cards
-- AC assumed state card
-- PIU14 power and temperature buttons
-- daily scheduled climate control with configurable hysteresis
-- fixed-window history scales with climate thresholds and AC event tooltips
-- automatic, manual, and error activity filters
-- explicit local-only assumed power correction
-- temperature/humidity history graph with 1-hour, 24-hour, 7-day, and 30-day views
-- recent activity list with IR events and device errors/disconnects
-- settings page
-
-The Sync Power button only changes LocalAIR's saved power state. It does not
-send a command.
-
-### Screenshots
-
-Main dashboard:
-
-![LocalAIR web dashboard](screenshots/LocalAIR.Web.UI.png)
-
-Settings page:
-
-![LocalAIR settings page](screenshots/LocalAIR.Web.UI.Settings.png)
-
-## AC state behavior
-
-LocalAIR sends the learned 16–30 °C complete-state frames and Power Off command
-directly to the IR blaster over the LAN. Because IR is one-way, LocalAIR tracks
-an assumed state. It updates that state when:
-
-- LocalAIR successfully sends an AC command
-- you press Sync Power
-
-When climate control is enabled, LocalAIR turns cooling on at or above the
-configured upper threshold and off at or below the lower threshold. It always
-turns the AC off outside the daily schedule or when sensor data is stale.
-
-Unknown observed IR signals are logged to:
-
-```text
-/data/unknown-ir.log
-```
-
-## Testing the device from inside the container
-
-If the web UI loads but the device does not connect:
-
-```sh
-docker exec -it localair python scripts/read_device.py
-```
-
-If your Unraid template created a container named `LocalAIR`, use:
+**The dashboard says Disconnected or shows a device error.** Check the details
+with **Test connection** in Settings, or read the sensor from inside the
+container:
 
 ```sh
 docker exec -it LocalAIR python scripts/read_device.py
 ```
 
-Also confirm Unraid can reach the device:
+The usual causes are a wrong local key, IP, device ID or protocol version; the
+sensor moving to another IP, Wi-Fi network or VLAN; or another app (such as
+Home Assistant's Tuya Local) holding the sensor's only local connection.
+
+**The AC and the dashboard disagree.** Use **Mark it as on / off** to correct
+LocalAIR's record without sending anything.
+
+**The schedule runs at the wrong time.** The schedule follows the container's
+timezone, not your browser's. Set `TZ` in the container to your own timezone.
+
+Logs are available with `docker logs -f LocalAIR`. HTTP request logging is off
+by default to keep the log quiet; set `LOCALAIR_ACCESS_LOG=true` to turn it on.
+
+## Building it yourself
 
 ```sh
-ping -c 3 YOUR_DEVICE_IP
+git clone https://github.com/Vyrnexis/LocalAir.git
+cd LocalAir
+docker build -t localair:latest .
 ```
 
-Common causes of connection failure:
+On Unraid, use [`unraid/localair-local.xml`](unraid/localair-local.xml) for a
+locally built image. Unraid can't check a local image for updates, so rebuild
+and recreate the container to update.
 
-- missing or wrong local key
-- wrong device IP
-- wrong device ID
-- wrong protocol version
-- device moved to another Wi-Fi network/VLAN
-- another client holding the Tuya connection open
-
-## Local development
-
-Install dependencies:
+## Development
 
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+LOCALAIR_DATA=/tmp/localair .venv/bin/python -m src.web_main   # http://localhost:8787
+.venv/bin/python -m unittest
 ```
-
-Run the web app:
-
-```sh
-LOCALAIR_DATA=/tmp/localair .venv/bin/python -m src.web_main
-```
-
-Run tests:
-
-```sh
-python3 -m unittest
-```
-
-## Project structure
 
 ```text
-src/config.py      TOML config, data paths, secure saving
-src/device.py      Tuya reads, IR send/listen logic, state updates
-src/storage.py     SQLite history and event storage
-src/web.py         FastAPI dashboard and JSON API
-src/web_main.py    web server entry point
-scripts/           helper scripts
-tests/             core tests
-unraid/            Unraid templates and icon
+src/config.py         settings file: load, validate, save
+src/device.py         Tuya sensor reads, IR sending, automatic cooling decisions
+src/storage.py        SQLite history and activity
+src/web.py            FastAPI service and JSON API
+src/static/           dashboard and Settings pages (HTML, CSS, JS, fonts)
+src/piu14_ir_codes.json  learned PIU14 IR codes
+scripts/read_device.py   one-off sensor read for troubleshooting
+unraid/               Unraid templates and icon
 ```
+
+Pull requests and pushes to `main` run the tests. Pushes to `main` publish
+`ghcr.io/vyrnexis/localair:latest`; tags like `v1.2.0` also publish `1.2.0`
+and `1.2`. See [`unraid/README.md`](unraid/README.md) for releasing.
 
 ## License
 
-LocalAIR is released under the MIT License. See `LICENSE`.
+LocalAIR is released under the MIT License; see [`LICENSE`](LICENSE). The
+bundled Barlow font is licensed under the SIL Open Font License; see
+[`src/static/fonts/OFL.txt`](src/static/fonts/OFL.txt).

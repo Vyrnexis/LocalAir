@@ -24,6 +24,7 @@ const inputs = () => [...form.elements].filter(input => input.name);
 function formValues() {
   const values = {};
   for (const input of inputs()) {
+    if (input.disabled) continue;
     if (input.type === "checkbox") values[input.name] = input.checked;
     else if (input.name === "local_key") values.local_key = input.value.trim();
     else if (NUMBER_FIELDS.has(input.name)) values[input.name] = input.value === "" ? "" : Number(input.value);
@@ -40,14 +41,15 @@ function fill(settings) {
     else input.value = settings[input.name] ?? "";
   }
   $("keySaved").hidden = !settings.local_key_saved;
-  const overridden = Object.entries(settings.env_overrides || {})
-    .filter(([, value]) => value)
-    .map(([name]) => name === "server_host" ? "host" : "port");
-  $("envNote").hidden = overridden.length === 0;
-  $("restartNote").hidden = overridden.length === 2;
-  if (overridden.length) {
-    $("envNoteText").textContent = `Docker is setting the web ${overridden.join(" and ")} (LOCALAIR_HOST, LOCALAIR_PORT), so ${overridden.length === 2 ? "these fields have" : "that field has"} no effect. Change ${overridden.length === 2 ? "them" : "it"} in the Unraid template instead.`;
+  // Show the values the container actually uses, read-only.
+  const env = settings.env_overrides || {};
+  for (const name of ["server_host", "server_port"]) {
+    const input = form.elements[name];
+    input.disabled = Boolean(env[name]);
+    if (env[name]) input.value = env[name];
   }
+  $("envNote").hidden = !(env.server_host || env.server_port);
+  $("restartNote").hidden = Boolean(env.server_host && env.server_port);
   clearErrors();
   update();
 }

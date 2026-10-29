@@ -260,9 +260,10 @@ class LocalAirService:
             "server_host": config.server_host,
             "server_port": config.server_port,
             "history_retention_days": config.history_retention_days,
+            # Values the container sets, which win over the saved ones.
             "env_overrides": {
-                "server_host": "LOCALAIR_HOST" in os.environ,
-                "server_port": "LOCALAIR_PORT" in os.environ,
+                "server_host": os.environ.get("LOCALAIR_HOST"),
+                "server_port": os.environ.get("LOCALAIR_PORT"),
             },
         }
 

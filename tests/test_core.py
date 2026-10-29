@@ -524,6 +524,14 @@ class SettingsServiceTests(unittest.TestCase):
         self.assertTrue(settings["local_key_saved"])
         self.assertNotIn("not-a-real-key", str(settings))
 
+    # Container-set host and port are reported so Settings can show them.
+    def test_settings_report_container_overrides(self) -> None:
+        with patch.dict("os.environ", {"LOCALAIR_PORT": "9000"}):
+            overrides = self.service.settings()["env_overrides"]
+
+        self.assertEqual(overrides["server_port"], "9000")
+        self.assertIsNone(overrides["server_host"])
+
     # JSON values save, and a blank key keeps the saved one.
     def test_update_settings_accepts_json_values(self) -> None:
         self.service.update_settings(

@@ -29,9 +29,6 @@
   --ok: #5bd08a;
   --bad: #f0716b;
   --bad-tint: rgba(240, 113, 107, .14);
-  --caution: #e8c25a;
-  --caution-tint: rgba(232, 194, 90, .09);
-  --caution-ink: #e9d9a6;
   --tooltip: #0d141b;
   --shadow: 0 12px 30px rgba(0, 0, 0, .35);
 }
@@ -56,9 +53,6 @@
   --ok: #1e9e5a;
   --bad: #cf3f39;
   --bad-tint: rgba(207, 63, 57, .1);
-  --caution: #a67a00;
-  --caution-tint: rgba(196, 150, 20, .12);
-  --caution-ink: #5c4600;
   --tooltip: #ffffff;
   --shadow: 0 12px 30px rgba(19, 32, 44, .14);
 }

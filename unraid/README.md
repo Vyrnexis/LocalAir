@@ -11,7 +11,7 @@ For local source builds, this documentation assumes the repository is cloned to:
 That is the default folder name created by:
 
 ```sh
-git clone https://codeberg.org/Vyrnexis/localAIR.git
+git clone https://github.com/Vyrnexis/LocalAir.git localAIR
 ```
 
 ## Appdata
@@ -70,50 +70,50 @@ http://YOUR_UNRAID_IP:8787
 There are two templates:
 
 ```text
-localair.xml        Public install using vyrnexis/localair:latest
+localair.xml        Normal install using ghcr.io/vyrnexis/localair:latest
 localair-local.xml  Local install using an image already built as localair:latest
 ```
 
-Use `localair-local.xml` if you are testing on your own Unraid server before a
-public image exists.
+Use `localair-local.xml` only when testing an image you built yourself on the
+Unraid server.
 
-## Publishing the public template
+## Installing the published image
 
-The public template points to the Codeberg source repository:
-
-```text
-https://codeberg.org/Vyrnexis/localAIR
-```
-
-The Docker image should exist at:
+The GitHub Actions workflow in `.github/workflows/docker.yml` runs the tests and
+publishes a multi-arch image to the GitHub Container Registry:
 
 ```text
-vyrnexis/localair:latest
+ghcr.io/vyrnexis/localair:latest   every push to main
+ghcr.io/vyrnexis/localair:1.2.3    every v1.2.3 tag (also :1.2)
+ghcr.io/vyrnexis/localair:sha-abc  every build
 ```
 
-Publish it to Docker Hub with:
+On Unraid, install the template straight from GitHub:
 
 ```sh
-docker login
-docker build -t vyrnexis/localair:latest .
-docker push vyrnexis/localair:latest
+mkdir -p /boot/config/plugins/dockerMan/templates-user
+wget -O /boot/config/plugins/dockerMan/templates-user/my-localair.xml \
+  https://raw.githubusercontent.com/Vyrnexis/LocalAir/main/unraid/localair.xml
 ```
 
-The templates use the Codeberg raw `localair.png` URL for the Docker page icon.
-That avoids depending on a local icon file under `/mnt/user/appdata/localAIR`
-when testing locally built images.
+Then use `Docker → Add Container → Template → LocalAIR → Apply`. No clone or
+local build is needed, and the Docker tab shows when an update is available.
+Updating is `Docker → LocalAIR → Update`.
+
+To pin a release instead of following `main`, change the template's Repository
+to a version tag, e.g. `ghcr.io/vyrnexis/localair:1.2`.
+
+## Releasing
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The first time the workflow publishes, the GHCR package is private. Make it
+public once under GitHub → Packages → localair → Package settings → Change
+visibility, or Unraid will not be able to pull it.
 
 The Unraid Docker page may show `Version: not available` when using
-`localair-local.xml`. That is expected because the template uses a locally built
-image:
-
-```text
-localair:latest
-```
-
-Unraid can only check available updates when the repository points to a public
-registry image such as:
-
-```text
-vyrnexis/localair:latest
-```
+`localair-local.xml`. That is expected for a locally built image, because
+Unraid can only check for updates against a registry image.

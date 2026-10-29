@@ -19,4 +19,7 @@ COPY config.example.toml ./config.example.toml
 VOLUME ["/data"]
 EXPOSE 8787
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"LOCALAIR_PORT\", \"8787\")}/api/status', timeout=4)"
+
 CMD ["python", "-m", "src.web_main"]

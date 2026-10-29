@@ -67,9 +67,13 @@ def decide_climate(
 
     current_time = now.strftime("%H:%M")
     schedule = f"{config.climate_start}–{config.climate_end}"
+    # Outside the window the AC is left to manual control; the service sends
+    # one Off when the window ends.
     if not config.climate_start <= current_time < config.climate_end:
         return ClimateDecision(
-            "Outside schedule", f"Active daily {schedule}.", "off"
+            "Outside schedule",
+            f"Active daily {schedule}. Manual control until then.",
+            None,
         )
 
     if reading is None:

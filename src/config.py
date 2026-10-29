@@ -131,7 +131,8 @@ class AppConfig:
             raise ValueError("Schedule start must be before schedule end.")
         if not -20 <= self.turn_off_at < self.turn_on_at <= 60:
             raise ValueError(
-                "Cooling-off temperature must be below cooling-on temperature."
+                "The turn-off temperature must be lower than the turn-on "
+                "temperature."
             )
         if not 16 <= self.aircon_temperature <= 30:
             raise ValueError("Air-conditioner temperature must be 16–30°C.")

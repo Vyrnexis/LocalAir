@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import stat
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from unittest.mock import Mock, patch
 
 from src.config import AppConfig, load_config, save_config
 from src.device import (
+    CommandResult,
     ConnectionStatus,
     DeviceMonitor,
     DeviceReading,
@@ -19,6 +21,7 @@ from src.device import (
     update_ac_state,
 )
 from src.storage import LocalAirStore
+from src.web import LocalAirService, SettingsError
 
 
 class ConfigTests(unittest.TestCase):
@@ -224,36 +227,51 @@ class DeviceTests(unittest.TestCase):
             decide_climate(config, stale, "on", midday).status,
             "Sensor unavailable",
         )
-        self.assertEqual(
+        self.assertIsNone(
             decide_climate(
                 config,
                 hot,
                 "on",
                 midday.replace(hour=16),
             ).desired_power,
-            "off",
         )
 
 class WebUiTests(unittest.TestCase):
-    # Keep the dependency-free dashboard focused on PIU14 and its requested UI.
-    def test_dashboard_has_piu14_controls_dark_mode_and_smooth_graph(self) -> None:
-        source = (Path(__file__).parents[1] / "src" / "web.py").read_text(
-            encoding="utf-8"
-        )
-        dashboard = source.split('DASHBOARD_HTML = """', 1)[1].split(
-            'SETTINGS_HTML = """', 1
-        )[0]
+    STATIC = Path(__file__).parents[1] / "src" / "static"
 
-        self.assertIn('id="powerButton"', dashboard)
-        self.assertIn('id="tempDown"', dashboard)
-        self.assertIn('id="tempUp"', dashboard)
-        self.assertIn('data-theme="dark"', dashboard)
-        self.assertIn("quadraticCurveTo", dashboard)
-        self.assertIn('id="automationState"', dashboard)
-        self.assertIn('id="chartTooltip"', dashboard)
-        self.assertIn('<option value="1h">1 hour</option>', dashboard)
-        self.assertIn("/api/sync/power/${power}", dashboard)
-        self.assertNotIn("mode_heat", dashboard)
+    # Every element a script looks up by id must exist in its page.
+    def test_scripts_only_reference_existing_elements(self) -> None:
+        for page, script in (
+            ("index.html", "dashboard.js"),
+            ("settings.html", "settings.js"),
+        ):
+            html = (self.STATIC / page).read_text(encoding="utf-8")
+            source = (self.STATIC / script).read_text(encoding="utf-8")
+            ids = set(re.findall(r'\$\("([A-Za-z]+)"\)', source))
+            self.assertTrue(ids, script)
+            for element_id in ids:
+                self.assertIn(f'id="{element_id}"', html, f"{script}: {element_id}")
+
+    # The settings form posts every field the service reads.
+    def test_settings_form_covers_every_setting(self) -> None:
+        html = (self.STATIC / "settings.html").read_text(encoding="utf-8")
+        names = set(re.findall(r'<input[^>]*\sname="([a-z_]+)"', html))
+        self.assertEqual(
+            names,
+            {
+                "climate_enabled", "climate_start", "climate_end",
+                "turn_on_at", "turn_off_at", "aircon_temperature",
+                "sensor_timeout_seconds", "ip_address", "protocol_version",
+                "device_id", "local_key", "poll_interval_seconds",
+                "history_retention_days", "server_host", "server_port",
+            },
+        )
+
+    # Pages load only bundled assets, so the UI works without internet access.
+    def test_pages_use_only_local_assets(self) -> None:
+        for page in ("index.html", "settings.html", "app.css"):
+            source = (self.STATIC / page).read_text(encoding="utf-8")
+            self.assertNotRegex(source, r"https?://")
 
 
 class StorageTests(unittest.TestCase):
@@ -403,6 +421,210 @@ class StorageTests(unittest.TestCase):
                         f"SELECT COUNT(*) FROM {table}"
                     ).fetchone()[0]
                     self.assertEqual(count, 0)
+
+
+class HistoryTests(unittest.TestCase):
+    # Two-hour buckets group readings into even hours, not just hours.
+    def test_thirty_day_history_uses_two_hour_buckets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalAirStore(Path(directory) / "test.db", 31)
+            base = datetime.now().astimezone().replace(
+                hour=2, minute=0, second=0, microsecond=0
+            ) - timedelta(days=1)
+            for minutes, temperature in ((0, 20.0), (70, 22.0), (130, 30.0)):
+                store.add_reading(
+                    DeviceReading(
+                        temperature,
+                        50,
+                        base + timedelta(minutes=minutes),
+                        ConnectionStatus.CONNECTED,
+                    )
+                )
+
+            points = store.history("30d")
+
+            self.assertEqual(
+                [point["temperature_c"] for point in points], [21.0, 30.0]
+            )
+
+    # Power changes become on-periods, including one still running.
+    def test_power_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalAirStore(Path(directory) / "test.db", 31)
+            now = datetime.now().astimezone().replace(microsecond=0)
+            start = now - timedelta(hours=3)
+            with store._connect() as db:
+                for minutes_ago, old, new in (
+                    (240, "off", "on"),
+                    (150, "on", "off"),
+                    (60, "off", "on"),
+                ):
+                    db.execute(
+                        "INSERT INTO ac_state_events (timestamp, source, field, "
+                        "old_value, new_value) VALUES (?, 'test', 'power', ?, ?)",
+                        (
+                            (now - timedelta(minutes=minutes_ago)).isoformat(),
+                            old,
+                            new,
+                        ),
+                    )
+
+            runs = store.power_runs(start, now, "on")
+
+            self.assertEqual(
+                runs,
+                [
+                    {
+                        "start": start.isoformat(timespec="seconds"),
+                        "end": (now - timedelta(minutes=150)).isoformat(
+                            timespec="seconds"
+                        ),
+                    },
+                    {
+                        "start": (now - timedelta(minutes=60)).isoformat(
+                            timespec="seconds"
+                        ),
+                        "end": now.isoformat(timespec="seconds"),
+                    },
+                ],
+            )
+            self.assertEqual(
+                store.power_runs(now - timedelta(minutes=30), now, "off"),
+                [
+                    {
+                        "start": (now - timedelta(minutes=30)).isoformat(
+                            timespec="seconds"
+                        ),
+                        "end": now.isoformat(timespec="seconds"),
+                    }
+                ],
+            )
+
+
+class SettingsServiceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.environ = patch.dict(
+            "os.environ", {"LOCALAIR_DATA": self.directory.name}
+        )
+        self.environ.start()
+        save_config(AppConfig(local_key="not-a-real-key"))
+        self.service = LocalAirService()
+        self.service.monitor = Mock()
+
+    def tearDown(self) -> None:
+        self.environ.stop()
+        self.directory.cleanup()
+
+    # The Settings API reports whether a key is saved, never the key itself.
+    def test_settings_never_include_the_local_key(self) -> None:
+        settings = self.service.settings()
+
+        self.assertNotIn("local_key", settings)
+        self.assertTrue(settings["local_key_saved"])
+        self.assertNotIn("not-a-real-key", str(settings))
+
+    # JSON values save, and a blank key keeps the saved one.
+    def test_update_settings_accepts_json_values(self) -> None:
+        self.service.update_settings(
+            {
+                "climate_enabled": True,
+                "turn_on_at": 25.5,
+                "turn_off_at": "23",
+                "local_key": "",
+            }
+        )
+
+        config = load_config()
+        self.assertTrue(config.climate_enabled)
+        self.assertEqual((config.turn_on_at, config.turn_off_at), (25.5, 23.0))
+        self.assertEqual(config.local_key, "not-a-real-key")
+
+    # Errors name the field the Settings page should highlight.
+    def test_settings_errors_name_the_field(self) -> None:
+        cases = (
+            ({"poll_interval_seconds": "soon"}, "poll_interval_seconds"),
+            ({"turn_on_at": 21, "turn_off_at": 22}, "turn_off_at"),
+            ({"aircon_temperature": 40}, "aircon_temperature"),
+            ({"ip_address": " "}, "ip_address"),
+        )
+        for data, field in cases:
+            with self.subTest(field=field):
+                with self.assertRaises(SettingsError) as raised:
+                    self.service.update_settings(data)
+                self.assertEqual(raised.exception.field, field)
+
+    # Testing unchanged details reuses the live reading instead of reconnecting.
+    def test_connection_test_reuses_live_reading(self) -> None:
+        self.service.latest_reading = DeviceReading(
+            24.5, 60, datetime.now().astimezone(), ConnectionStatus.CONNECTED
+        )
+        with patch("src.web.TuyaDevice") as device:
+            result = self.service.test_connection({})
+
+        device.assert_not_called()
+        self.assertEqual(
+            result,
+            {
+                "ok": True,
+                "message": "Connected.",
+                "temperature_c": 24.5,
+                "humidity_percent": 60,
+            },
+        )
+
+
+class ClimateServiceTests(unittest.TestCase):
+    # Hold the band during the window, send one Off at the end, then allow manual use.
+    def test_schedule_end_turns_off_once_then_allows_manual_control(self) -> None:
+        clock = [datetime(2026, 1, 1, 15, 59).astimezone()]
+
+        class FakeDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock[0]
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ", {"LOCALAIR_DATA": directory}
+        ), patch("src.web.datetime", FakeDatetime):
+            save_config(
+                AppConfig(
+                    local_key="not-a-real-key",
+                    climate_enabled=True,
+                    ac_state={"power": "off", "temperature": "24"},
+                )
+            )
+            service = LocalAirService()
+            sent: list[str] = []
+            service.monitor = Mock()
+            service.monitor.send_ir.side_effect = lambda key: (
+                sent.append(key) or CommandResult(True, "sent")
+            )
+            service.last_valid_reading = DeviceReading(
+                25.0, 40, clock[0], ConnectionStatus.CONNECTED
+            )
+
+            service._evaluate_climate()
+            self.assertEqual(sent, ["cold 16°C auto"])
+            self.assertEqual(service.config.ac_state["power"], "on")
+            self.assertEqual(service.config.ac_state["temperature"], "16")
+
+            clock[0] = clock[0].replace(hour=16, minute=0)
+            service._evaluate_climate()
+            self.assertEqual(sent[-1], "Power Off")
+            self.assertEqual(service.config.ac_state["power"], "off")
+            self.assertEqual(
+                service.store.recent_ir_events(1)[0]["command"], "schedule_end"
+            )
+
+            sent.clear()
+            service.send_ir("power")
+            self.assertEqual(sent, ["cold 16°C auto"])
+            clock[0] = clock[0].replace(hour=17)
+            service._evaluate_climate()
+            self.assertEqual(sent, ["cold 16°C auto"])
+            self.assertEqual(service.config.ac_state["power"], "on")
+            self.assertEqual(service.climate.status, "Outside schedule")
 
 
 if __name__ == "__main__":

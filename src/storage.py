@@ -10,6 +10,10 @@ import threading
 from .device import DeviceReading
 
 
+RANGE_HOURS = {"1h": 1, "24h": 24, "7d": 24 * 7, "30d": 24 * 30, "31d": 24 * 31}
+BUCKET_MINUTES = {"1h": 1, "24h": 5, "7d": 30, "30d": 120, "31d": 120}
+
+
 class LocalAirStore:
     """Small thread-safe SQLite wrapper used by the web service."""
 
@@ -204,13 +208,8 @@ class LocalAirStore:
         )[:limit]
 
     def history(self, range_name: str) -> list[dict]:
-        hours, bucket_minutes = {
-            "1h": (1, 1),
-            "24h": (24, 5),
-            "7d": (24 * 7, 30),
-            "30d": (24 * 30, 120),
-            "31d": (24 * 31, 120),
-        }.get(range_name, (24, 5))
+        hours = RANGE_HOURS.get(range_name, 24)
+        bucket_minutes = BUCKET_MINUTES.get(range_name, 5)
         start = datetime.now().astimezone() - timedelta(hours=hours)
         start_str = start.isoformat(timespec="seconds")
 
@@ -231,9 +230,14 @@ class LocalAirStore:
         for row in rows:
             timestamp = datetime.fromisoformat(row["timestamp"])
             timestamp = timestamp.astimezone()
-            minute = timestamp.minute - (timestamp.minute % bucket_minutes)
+            # Floor within the day so buckets longer than an hour work too.
+            minutes = timestamp.hour * 60 + timestamp.minute
+            minutes -= minutes % bucket_minutes
             bucket = timestamp.replace(
-                minute=minute, second=0, microsecond=0
+                hour=minutes // 60,
+                minute=minutes % 60,
+                second=0,
+                microsecond=0,
             )
             buckets.setdefault(bucket, []).append(
                 (float(row["temperature_c"]), int(row["humidity_percent"]))
@@ -257,13 +261,7 @@ class LocalAirStore:
 
     # Return successful AC commands within the selected chart window.
     def history_events(self, range_name: str) -> list[dict]:
-        hours = {
-            "1h": 1,
-            "24h": 24,
-            "7d": 24 * 7,
-            "30d": 24 * 30,
-            "31d": 24 * 31,
-        }.get(range_name, 24)
+        hours = RANGE_HOURS.get(range_name, 24)
         start = datetime.now().astimezone() - timedelta(hours=hours)
         with self.lock, self._connect() as db:
             rows = db.execute(
@@ -278,6 +276,57 @@ class LocalAirStore:
                 (start.isoformat(timespec="seconds"),),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # Return the periods the AC was assumed on between start and end.
+    def power_runs(
+        self, start: datetime, end: datetime, current_power: str
+    ) -> list[dict]:
+        start_str = start.isoformat(timespec="seconds")
+        with self.lock, self._connect() as db:
+            before = db.execute(
+                """
+                SELECT new_value FROM ac_state_events
+                WHERE field = 'power'
+                  AND datetime(timestamp) < datetime(?)
+                ORDER BY datetime(timestamp) DESC, id DESC
+                LIMIT 1
+                """,
+                (start_str,),
+            ).fetchone()
+            rows = db.execute(
+                """
+                SELECT timestamp, old_value, new_value FROM ac_state_events
+                WHERE field = 'power'
+                  AND datetime(timestamp) >= datetime(?)
+                ORDER BY datetime(timestamp), id
+                """,
+                (start_str,),
+            ).fetchall()
+
+        if before:
+            power = before["new_value"]
+        elif rows:
+            power = rows[0]["old_value"]
+        else:
+            power = current_power
+        runs: list[dict] = []
+        run_start = start if power == "on" else None
+        for row in rows:
+            timestamp = datetime.fromisoformat(row["timestamp"])
+            if row["new_value"] == "on" and run_start is None:
+                run_start = timestamp
+            elif row["new_value"] != "on" and run_start is not None:
+                runs.append({"start": run_start, "end": timestamp})
+                run_start = None
+        if run_start is not None:
+            runs.append({"start": run_start, "end": end})
+        return [
+            {
+                "start": run["start"].isoformat(timespec="seconds"),
+                "end": run["end"].isoformat(timespec="seconds"),
+            }
+            for run in runs
+        ]
 
     def cleanup_if_due(self) -> None:
         now = datetime.now().astimezone()

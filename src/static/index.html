@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LocalAIR</title>
+  <link rel="icon" type="image/png" href="/localair.png">
+  <link rel="apple-touch-icon" href="/localair.png">
+  <script src="/static/theme.js"></script>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+<main>
+  <header class="top">
+    <a class="mark" href="/">Local<b>AIR</b></a>
+    <div class="end">
+      <div class="status" id="status"><i class="dot" id="statusDot"></i><span id="statusText">Connecting…</span><span class="long" id="statusTime"></span></div>
+      <button class="icon-btn" id="themeToggle" type="button">
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+      <a class="btn-quiet" href="/settings">Settings</a>
+    </div>
+  </header>
+
+  <section class="instrument" aria-label="Room">
+    <div class="reading">
+      <div class="label">Room now</div>
+      <div class="temp num" id="roomTemp">--<sup>°C</sup></div>
+      <div class="humid"><strong class="num" id="roomHumidity">--%</strong> humidity</div>
+      <p class="verdict" id="verdict">Waiting for the first reading<span id="verdictDetail"></span></p>
+    </div>
+    <div class="gauges">
+      <div>
+        <div class="gauge-title"><span>Comfort band</span><strong id="bandLabel">--</strong></div>
+        <svg id="bandGauge" class="gauge" height="70" role="img" aria-label="Room temperature against the comfort band"></svg>
+      </div>
+      <div>
+        <div class="gauge-title"><span>Today</span><span id="todaySummary"></span></div>
+        <svg id="todayStrip" class="gauge" height="74" role="img" aria-label="Today's schedule and AC running times"></svg>
+      </div>
+    </div>
+  </section>
+
+  <section class="panels">
+    <div class="panel">
+      <div class="panel-head"><h2>Air conditioner</h2><span class="pill" id="powerState">--</span></div>
+      <div class="ac-row">
+        <button class="step" id="tempDown" type="button" aria-label="Lower AC temperature">−</button>
+        <div class="setpoint"><div class="num" id="setpoint">--°</div><div>AC set temperature</div></div>
+        <button class="step" id="tempUp" type="button" aria-label="Raise AC temperature">+</button>
+      </div>
+      <button class="power-btn" id="powerButton" type="button">Turn on</button>
+      <p class="feedback" id="feedback" role="status"></p>
+      <div class="fix">AC showing the wrong state? Mark it as
+        <button class="link" type="button" data-power="on">on</button> or
+        <button class="link" type="button" data-power="off">off</button>
+        without sending a command.</div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2 id="automationLabel">Automatic cooling</h2>
+        <button class="switch" id="climateToggle" type="button" aria-labelledby="automationLabel" aria-pressed="false"></button>
+      </div>
+      <div class="rules">
+        <div><span>Schedule</span><strong id="ruleSchedule">--</strong></div>
+        <div><span>Turn on at</span><strong id="ruleOn">--</strong></div>
+        <div><span>Turn off at</span><strong id="ruleOff">--</strong></div>
+      </div>
+      <div class="next">
+        <div class="glyph" id="nextGlyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+        <p><span id="nextTitle">--</span><span class="sub" id="nextDetail"></span></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="history">
+    <div class="section-head">
+      <h2>History</h2>
+      <div class="legend" aria-hidden="true">
+        <span><i class="key line" style="background:var(--warm)"></i>Temperature</span>
+        <span><i class="key line" style="background:var(--humid)"></i>Humidity</span>
+        <span><i class="key ac"></i>AC running</span>
+        <span><i class="key band"></i>Comfort band</span>
+      </div>
+      <div class="seg" role="radiogroup" aria-label="History range">
+        <button type="button" role="radio" data-range="1h">1 h</button>
+        <button type="button" role="radio" data-range="24h">24 h</button>
+        <button type="button" role="radio" data-range="7d">7 days</button>
+        <button type="button" role="radio" data-range="30d">30 days</button>
+      </div>
+    </div>
+    <div class="chart-wrap" id="charts">
+      <div class="chart-label"><strong>Temperature</strong><span>°C</span></div>
+      <svg id="tempChart" class="chart" height="230" role="img" aria-label="Room temperature history"></svg>
+      <div class="chart-label"><strong>Humidity</strong><span>%</span></div>
+      <svg id="humidChart" class="chart" height="150" role="img" aria-label="Humidity history"></svg>
+      <p class="empty" id="chartEmpty" hidden>No readings in this period yet.</p>
+      <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+    </div>
+  </section>
+
+  <section class="activity">
+    <div class="section-head">
+      <h2>Activity</h2>
+      <div class="chips" aria-label="Activity filter">
+        <button type="button" data-filter="all" class="on">All</button>
+        <button type="button" data-filter="automatic">Automatic</button>
+        <button type="button" data-filter="manual">Manual</button>
+        <button type="button" data-filter="errors">Errors</button>
+      </div>
+    </div>
+    <ul class="events" id="events"></ul>
+    <p class="empty" id="eventsEmpty" hidden>Nothing here yet.</p>
+    <button class="more" id="eventsMore" type="button" hidden>Show more</button>
+  </section>
+</main>
+<script src="/static/dashboard.js"></script>
+</body>
+</html>

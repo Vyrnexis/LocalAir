@@ -1,3 +1,4 @@
+# Only src/, scripts/ and requirements.txt are needed to build the image.
 .git
 .github
 .venv
@@ -8,8 +9,20 @@ __pycache__
 *.db
 *.db-*
 *.log
-config.toml
-.env
 build
 dist
 *.egg-info
+tests
+screenshots
+unraid
+*.md
+
+# Local credentials and device captures: never send these to Docker.
+config.toml
+.env
+tinytuya.json
+devices.json
+snapshot.json
+tuya-raw.json
+splended.aircon.piu14.txt
+learned-ir-codes.json

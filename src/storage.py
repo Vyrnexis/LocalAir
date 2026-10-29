@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
@@ -23,7 +24,6 @@ class LocalAirStore:
         self.lock = threading.Lock()
         self.last_cleanup: datetime | None = None
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self._connect().close()
         self._migrate()
 
     def _connect(self) -> sqlite3.Connection:
@@ -33,8 +33,18 @@ class LocalAirStore:
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
+    # Open a connection for one transaction and always close it afterwards.
+    @contextmanager
+    def _db(self):
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     def _migrate(self) -> None:
-        with self.lock, self._connect() as db:
+        with self.lock, self._db() as db:
             db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sensor_readings (
@@ -48,6 +58,7 @@ class LocalAirStore:
                 CREATE INDEX IF NOT EXISTS idx_sensor_readings_timestamp
                   ON sensor_readings(timestamp);
 
+                -- nec_hex and known are unused; kept for existing databases.
                 CREATE TABLE IF NOT EXISTS ir_events (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   timestamp TEXT NOT NULL,
@@ -73,7 +84,7 @@ class LocalAirStore:
             )
 
     def add_reading(self, reading: DeviceReading) -> None:
-        with self.lock, self._connect() as db:
+        with self.lock, self._db() as db:
             db.execute(
                 """
                 INSERT INTO sensor_readings (
@@ -91,14 +102,8 @@ class LocalAirStore:
             )
         self.cleanup_if_due()
 
-    def add_ir_event(
-        self,
-        source: str,
-        command: str | None,
-        nec_hex: str | None = None,
-        known: bool = True,
-    ) -> None:
-        with self.lock, self._connect() as db:
+    def add_ir_event(self, source: str, command: str) -> None:
+        with self.lock, self._db() as db:
             db.execute(
                 """
                 INSERT INTO ir_events (
@@ -109,8 +114,8 @@ class LocalAirStore:
                     datetime.now().astimezone().isoformat(timespec="seconds"),
                     source,
                     command,
-                    nec_hex,
-                    1 if known else 0,
+                    None,
+                    1,
                 ),
             )
 
@@ -130,7 +135,7 @@ class LocalAirStore:
             return
 
         timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
-        with self.lock, self._connect() as db:
+        with self.lock, self._db() as db:
             db.executemany(
                 """
                 INSERT INTO ac_state_events (
@@ -143,26 +148,14 @@ class LocalAirStore:
                 ],
             )
 
-    def recent_ir_events(self, limit: int = 8) -> list[dict]:
-        with self.lock, self._connect() as db:
-            rows = db.execute(
-                """
-                SELECT timestamp, source, command, nec_hex, known
-                FROM ir_events
-                ORDER BY timestamp DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-        return [dict(row) for row in rows]
-
     def recent_activity_events(self, limit: int = 10) -> list[dict]:
         """Return recent operator-facing activity for the dashboard."""
-        with self.lock, self._connect() as db:
+        with self.lock, self._db() as db:
             ir_rows = db.execute(
                 """
-                SELECT timestamp, source, command, nec_hex, known
+                SELECT timestamp, source, command
                 FROM ir_events
+                WHERE command IS NOT NULL
                 ORDER BY timestamp DESC
                 LIMIT ?
                 """,
@@ -186,8 +179,6 @@ class LocalAirStore:
                 "timestamp": row["timestamp"],
                 "source": row["source"],
                 "command": row["command"],
-                "nec_hex": row["nec_hex"],
-                "known": row["known"],
             }
             for row in ir_rows
         ]
@@ -213,7 +204,7 @@ class LocalAirStore:
         start = datetime.now().astimezone() - timedelta(hours=hours)
         start_str = start.isoformat(timespec="seconds")
 
-        with self.lock, self._connect() as db:
+        with self.lock, self._db() as db:
             rows = db.execute(
                 """
                 SELECT timestamp, temperature_c, humidity_percent
@@ -259,30 +250,12 @@ class LocalAirStore:
             for bucket, values in sorted(buckets.items())
         ]
 
-    # Return successful AC commands within the selected chart window.
-    def history_events(self, range_name: str) -> list[dict]:
-        hours = RANGE_HOURS.get(range_name, 24)
-        start = datetime.now().astimezone() - timedelta(hours=hours)
-        with self.lock, self._connect() as db:
-            rows = db.execute(
-                """
-                SELECT timestamp, source, command
-                FROM ir_events
-                WHERE command IS NOT NULL
-                  AND known = 1
-                  AND datetime(timestamp) >= datetime(?)
-                ORDER BY timestamp
-                """,
-                (start.isoformat(timespec="seconds"),),
-            ).fetchall()
-        return [dict(row) for row in rows]
-
     # Return the periods the AC was assumed on between start and end.
     def power_runs(
         self, start: datetime, end: datetime, current_power: str
     ) -> list[dict]:
         start_str = start.isoformat(timespec="seconds")
-        with self.lock, self._connect() as db:
+        with self.lock, self._db() as db:
             before = db.execute(
                 """
                 SELECT new_value FROM ac_state_events
@@ -334,7 +307,7 @@ class LocalAirStore:
             return
         cutoff = now - timedelta(days=self.retention_days)
         cutoff_str = cutoff.isoformat(timespec="seconds")
-        with self.lock, self._connect() as db:
+        with self.lock, self._db() as db:
             db.execute(
                 """
                 DELETE FROM sensor_readings

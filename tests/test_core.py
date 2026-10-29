@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import re
 import stat
 import tempfile
@@ -14,6 +15,7 @@ from src.device import (
     ConnectionStatus,
     DeviceMonitor,
     DeviceReading,
+    NOT_CONFIGURED,
     TuyaDevice,
     decide_climate,
     load_local_ir_code,
@@ -29,10 +31,10 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
             expected = AppConfig(
+                ip_address="192.0.2.10",
+                device_id="test-device",
                 local_key="not-a-real-key",
-                ir_address=0x08E7,
-                ir_commands={"power": 0x00},
-                ac_state={"power": "on", "mode": "heat"},
+                ac_state={"power": "on", "temperature": "21"},
                 climate_enabled=True,
                 climate_start="09:30",
                 climate_end="15:45",
@@ -57,11 +59,10 @@ class ConfigTests(unittest.TestCase):
 
             loaded = load_config(path)
 
-            self.assertEqual(loaded.ip_address, "192.168.1.145")
+            self.assertEqual(loaded.ip_address, "")
+            self.assertFalse(loaded.sensor_configured)
             self.assertEqual(loaded.protocol_version, 3.5)
             self.assertEqual(loaded.poll_interval_seconds, 30)
-            self.assertEqual(loaded.ir_address, 0x08E7)
-            self.assertEqual(loaded.ir_commands, {})
             self.assertEqual(
                 loaded.ac_state,
                 {"power": "off", "temperature": "24"},
@@ -154,11 +155,9 @@ class DeviceTests(unittest.TestCase):
         with patch("src.device.time.sleep") as sleep:
             DeviceMonitor._send_local_ir(device, "cold 16°C auto")
 
-        device.study_end.assert_called_once_with()
         device.send_button.assert_called_once()
         self.assertTrue(device.send_button.call_args.args[0])
-        self.assertEqual(sleep.call_args_list[0].args, (0.2,))
-        self.assertEqual(sleep.call_args_list[1].args, (0.5,))
+        sleep.assert_called_once_with(0.5)
 
     # Keep repeated temperature presses inside the PIU14's supported range.
     def test_temperature_state_is_clamped(self) -> None:
@@ -171,32 +170,33 @@ class DeviceTests(unittest.TestCase):
             {"temperature": "16", "power": "on"},
         )
 
-    def test_nec_frame_uses_wire_order_and_inverse_byte(self) -> None:
-        self.assertEqual(TuyaDevice._nec_frame(0x08E7, 0x28), 0x08E728D7)
-
-    def test_observed_commands_update_assumed_state(self) -> None:
-        state = {
-            "power": "on",
-            "temperature": "22",
-            "swing": "off",
-        }
+    def test_sent_commands_update_assumed_state(self) -> None:
+        state = {"power": "on", "temperature": "22"}
 
         state = update_ac_state(state, "power")
-        state = update_ac_state(state, "mode_cool")
-        state = update_ac_state(state, "fan_high")
+        self.assertEqual(state, {"power": "off", "temperature": "22"})
         state = update_ac_state(state, "temp_up")
-        state = update_ac_state(state, "swing")
+        self.assertEqual(state, {"power": "on", "temperature": "23"})
+        state = update_ac_state(state, "climate_off")
+        self.assertEqual(state, {"power": "off", "temperature": "23"})
 
-        self.assertEqual(
-            state,
-            {
-                "power": "on",
-                "mode": "cool",
-                "temperature": "23",
-                "fan": "high",
-                "swing": "on",
-            },
-        )
+    # Without sensor details the monitor never connects, and sends fail fast.
+    def test_monitor_waits_for_sensor_details(self) -> None:
+        readings = []
+        monitor = DeviceMonitor(AppConfig(), readings.append)
+        replies = queue.Queue()
+        monitor.actions.put(("send", "Power Off", replies))
+        monitor.actions.put(("reconnect", None, None))
+
+        with patch(
+            "tinytuya.Contrib.IRRemoteControlDevice.IRRemoteControlDevice"
+        ) as device:
+            monitor._connected_loop()
+
+        device.assert_not_called()
+        self.assertEqual(len(readings), 1)
+        self.assertEqual(readings[0].error_message, NOT_CONFIGURED)
+        self.assertFalse(replies.get_nowait().ok)
 
     def test_unknown_toggle_state_remains_unknown(self) -> None:
         self.assertEqual(update_ac_state({}, "power"), {})
@@ -365,16 +365,23 @@ class StorageTests(unittest.TestCase):
             self.assertIn("ir", kinds)
             self.assertIn("device", kinds)
 
-    def test_history_events_excludes_unknown_commands(self) -> None:
+    # Rows from the removed remote listener have no command and are skipped.
+    def test_activity_skips_unrecognised_remote_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = LocalAirStore(Path(directory) / "localair.db", 31)
             store.add_ir_event("climate", "climate_on")
-            store.add_ir_event("observed", None, "0x1234", known=False)
+            with store._db() as db:
+                db.execute(
+                    "INSERT INTO ir_events (timestamp, source, command, "
+                    "nec_hex, known) VALUES (?, 'observed', NULL, '0x1234', 0)",
+                    (datetime.now().astimezone().isoformat(),),
+                )
 
-            events = store.history_events("24h")
+            events = store.recent_activity_events()
 
-            self.assertEqual(len(events), 1)
-            self.assertEqual(events[0]["command"], "climate_on")
+            self.assertEqual(
+                [event["command"] for event in events], ["climate_on"]
+            )
 
     def test_cleanup_prunes_all_tables(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -508,7 +515,13 @@ class SettingsServiceTests(unittest.TestCase):
             "os.environ", {"LOCALAIR_DATA": self.directory.name}
         )
         self.environ.start()
-        save_config(AppConfig(local_key="not-a-real-key"))
+        save_config(
+            AppConfig(
+                ip_address="192.0.2.10",
+                device_id="test-device",
+                local_key="not-a-real-key",
+            )
+        )
         self.service = LocalAirService()
         self.service.monitor = Mock()
 
@@ -597,6 +610,8 @@ class ClimateServiceTests(unittest.TestCase):
         ), patch("src.web.datetime", FakeDatetime):
             save_config(
                 AppConfig(
+                    ip_address="192.0.2.10",
+                    device_id="test-device",
                     local_key="not-a-real-key",
                     climate_enabled=True,
                     ac_state={"power": "off", "temperature": "24"},
@@ -622,7 +637,8 @@ class ClimateServiceTests(unittest.TestCase):
             self.assertEqual(sent[-1], "Power Off")
             self.assertEqual(service.config.ac_state["power"], "off")
             self.assertEqual(
-                service.store.recent_ir_events(1)[0]["command"], "schedule_end"
+                service.store.recent_activity_events(1)[0]["command"],
+                "schedule_end",
             )
 
             sent.clear()

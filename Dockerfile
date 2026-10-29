@@ -14,7 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src ./src
 COPY scripts ./scripts
-COPY config.example.toml ./config.example.toml
 
 VOLUME ["/data"]
 EXPOSE 8787

@@ -40,8 +40,8 @@ and is built to sit on an Unraid server.
 
 ## How automatic cooling works
 
-With the defaults — schedule 10:00 to 15:30, on at 24 °C, off at 22 °C, AC set
-to 16 °C:
+For example, with a schedule of 10:00 to 15:30, on at 24 °C, off at 22 °C, and
+the AC set to 16 °C:
 
 | When | What LocalAIR does |
 | --- | --- |
@@ -57,8 +57,9 @@ Automatic cooling is off until you switch it on, either on the dashboard or in
 Settings. Inside the schedule it may override manual changes when the room
 crosses a threshold; outside the schedule it never does.
 
-IR is one-way, so LocalAIR can't ask the AC what it's doing. It keeps track of
-the state it last sent. If someone uses the AC's own remote, use
+IR is one-way, so LocalAIR can't ask the AC what it's doing, and it doesn't see
+presses on the AC's own remote. It keeps track of the state it last sent. If
+someone uses the remote, use
 **Mark it as on / off** on the dashboard to correct LocalAIR without sending a
 command.
 
@@ -177,7 +178,6 @@ The data folder contains:
 ```text
 config.toml      settings, including the local key (saved with mode 600)
 localair.db      SQLite history: readings, AC commands, AC state changes
-unknown-ir.log   IR signals the sensor saw but didn't recognise
 ```
 
 ## Troubleshooting

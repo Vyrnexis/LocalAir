@@ -1,11 +1,15 @@
-# Copy to ~/.config/localair/config.toml and replace the placeholder key.
+# LocalAIR settings. Everything here can also be set on the Settings page,
+# which saves to this file. In Docker it lives at /data/config.toml.
+
 [device]
-ip_address = "192.168.1.145"
-device_id = "bfc626075b28194ecfhor5"
-local_key = "REPLACE_WITH_YOUR_LOCAL_KEY"
+ip_address = "192.168.1.50"
+device_id = "YOUR_DEVICE_ID"
+local_key = "YOUR_LOCAL_KEY"
 protocol_version = 3.5
 poll_interval_seconds = 30
 
+# During the schedule, turn the AC on at turn_on_at and off at turn_off_at
+# (room temperatures, °C). When the schedule ends the AC is turned off once.
 [climate]
 enabled = false
 start_time = "10:00"
@@ -22,13 +26,7 @@ port = 8787
 [history]
 retention_days = 31
 
-# Legacy NEC remote codes are retained only for observing old remotes.
-[ir]
-address = 0x08E7
-
-[ir.commands]
-
-# Starting point for assumed PIU14 state tracking.
+# LocalAIR's record of the AC, since IR can't be read back.
 [ac_state]
 power = "off"
 temperature = "24"

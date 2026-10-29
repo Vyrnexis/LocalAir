@@ -550,7 +550,7 @@ function describeEvent(event) {
   if (event.kind === "device") {
     return {icon: "bad", text: event.error_message || `Sensor ${String(event.status).toLowerCase()}`, who: "Device"};
   }
-  const who = {climate: "Automatic", localair: "Manual", observed: "Remote"}[event.source] || "Manual";
+  const who = event.source === "climate" ? "Automatic" : "Manual";
   const command = event.command || "";
   if (command.startsWith("temperature_")) return {icon: "set", text: `AC set to ${command.split("_")[1]} °C`, who};
   const known = {
@@ -561,7 +561,6 @@ function describeEvent(event) {
     power_off: ["off", "AC turned off"],
   }[command];
   if (known) return {icon: known[0], text: known[1], who};
-  if (!command) return {icon: "off", text: "Unrecognised remote signal", who};
   return {icon: "off", text: command.replaceAll("_", " "), who};
 }
 

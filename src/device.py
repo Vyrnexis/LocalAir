@@ -12,7 +12,7 @@ import threading
 import time
 from typing import Any
 
-from .config import AppConfig, state_path
+from .config import AppConfig
 
 
 IR_COMMANDS = {
@@ -21,6 +21,7 @@ IR_COMMANDS = {
     "temp_down",
 }
 PIU14_CODES_PATH = Path(__file__).with_name("piu14_ir_codes.json")
+NOT_CONFIGURED = "Open Settings and enter the sensor's details."
 
 
 class ConnectionStatus(StrEnum):
@@ -113,7 +114,7 @@ def decide_climate(
 
 
 def update_ac_state(state: dict[str, str], command: str) -> dict[str, str]:
-    """Apply an observed or transmitted remote command to assumed state."""
+    """Apply a transmitted command to the assumed AC state."""
     updated = dict(state)
     if command == "power":
         current = updated.get("power")
@@ -123,10 +124,6 @@ def update_ac_state(state: dict[str, str], command: str) -> dict[str, str]:
         updated["power"] = "on"
     elif command == "climate_off":
         updated["power"] = "off"
-    elif command.startswith("mode_"):
-        updated["mode"] = command.removeprefix("mode_")
-    elif command.startswith("fan_"):
-        updated["fan"] = command.removeprefix("fan_")
     elif command in {"temp_up", "temp_down"}:
         try:
             temperature = int(updated["temperature"])
@@ -138,10 +135,6 @@ def update_ac_state(state: dict[str, str], command: str) -> dict[str, str]:
                 min(30, max(16, temperature + change))
             )
             updated["power"] = "on"
-    elif command in {"swing", "timer"}:
-        current = updated.get(command)
-        if current in {"on", "off"}:
-            updated[command] = "off" if current == "on" else "on"
     return updated
 
 
@@ -203,11 +196,9 @@ class TuyaDevice:
 
     def get_status(self, config: AppConfig) -> DeviceReading:
         now = datetime.now().astimezone()
-        if not config.local_key:
+        if not config.sensor_configured:
             return self._failed_reading(
-                now,
-                ConnectionStatus.DISCONNECTED,
-                "Open Settings and enter the device local key.",
+                now, ConnectionStatus.DISCONNECTED, NOT_CONFIGURED
             )
 
         try:
@@ -237,10 +228,6 @@ class TuyaDevice:
                 ConnectionStatus.ERROR,
                 f"Could not read device ({type(exc).__name__}).",
             )
-
-    @staticmethod
-    def _nec_frame(address: int, command: int) -> int:
-        return (address << 16) | (command << 8) | (command ^ 0xFF)
 
     @staticmethod
     def _parse_status(
@@ -330,22 +317,15 @@ class TuyaDevice:
 
 
 class DeviceMonitor:
-    """Own the Tuya connection and serialize listening and sensor polling."""
+    """Own the Tuya connection and serialize sensor polling and IR sends."""
 
-    def __init__(
-        self,
-        config: AppConfig,
-        on_reading,
-        on_ir,
-    ) -> None:
+    def __init__(self, config: AppConfig, on_reading) -> None:
         self.config = config
         self.on_reading = on_reading
-        self.on_ir = on_ir
         self.actions: queue.Queue[
             tuple[str, str | None, queue.Queue[CommandResult] | None]
         ] = queue.Queue()
         self.stop_event = threading.Event()
-        self.last_unknown: tuple[str, float] | None = None
         self.thread = threading.Thread(
             target=self._run,
             name="localair-device",
@@ -390,12 +370,31 @@ class DeviceMonitor:
                 )
                 self.stop_event.wait(3)
 
+    # Without sensor details there is nothing to connect to; wait for Settings.
+    def _wait_for_settings(self) -> None:
+        self.on_reading(
+            TuyaDevice._failed_reading(
+                datetime.now().astimezone(),
+                ConnectionStatus.DISCONNECTED,
+                NOT_CONFIGURED,
+            )
+        )
+        while not self.stop_event.is_set():
+            action, _command, result_queue = self.actions.get()
+            if action in {"stop", "reconnect"}:
+                return
+            if result_queue:
+                result_queue.put(CommandResult(False, NOT_CONFIGURED))
+
     def _connected_loop(self) -> None:
         from tinytuya.Contrib.IRRemoteControlDevice import (
             IRRemoteControlDevice,
         )
 
         config = self.config
+        if not config.sensor_configured:
+            self._wait_for_settings()
+            return
         device = IRRemoteControlDevice(
             config.device_id,
             config.ip_address,
@@ -408,53 +407,38 @@ class DeviceMonitor:
         if not self._poll_sensor(device, config):
             self.stop_event.wait(3)
             return
-        self._start_learning(device)
         next_poll = time.monotonic() + config.poll_interval_seconds
 
-        try:
-            while not self.stop_event.is_set():
-                try:
-                    action, command, result_queue = self.actions.get_nowait()
-                except queue.Empty:
-                    action, command, result_queue = "", None, None
-
-                if action in {"stop", "reconnect"}:
-                    return
-                if action == "refresh":
-                    next_poll = min(next_poll, time.monotonic() + 0.2)
-                if action == "send" and command and result_queue:
-                    try:
-                        self._send_local_ir(device, command)
-                        result = CommandResult(True, "Local IR command sent.")
-                    except Exception as exc:
-                        result = CommandResult(
-                            False,
-                            f"Could not send local IR command "
-                            f"({type(exc).__name__}).",
-                        )
-                    try:
-                        self._start_learning(device)
-                    except Exception:
-                        pass
-                    result_queue.put(result)
-                    continue
-                if time.monotonic() >= next_poll:
-                    if not self._poll_sensor(device, config):
-                        return
-                    next_poll = (
-                        time.monotonic() + config.poll_interval_seconds
-                    )
-                    self._start_learning(device)
-                else:
-                    response = device._send_receive(None)
-
-                if self._handle_ir_response(response, config):
-                    self._start_learning(device)
-        finally:
+        while not self.stop_event.is_set():
             try:
-                device.study_end()
-            except Exception:
-                pass
+                action, command, result_queue = self.actions.get_nowait()
+            except queue.Empty:
+                action, command, result_queue = "", None, None
+
+            if action in {"stop", "reconnect"}:
+                return
+            if action == "refresh":
+                next_poll = min(next_poll, time.monotonic() + 0.2)
+            if action == "send" and command and result_queue:
+                try:
+                    self._send_local_ir(device, command)
+                    result = CommandResult(True, "Local IR command sent.")
+                except Exception as exc:
+                    result = CommandResult(
+                        False,
+                        f"Could not send local IR command "
+                        f"({type(exc).__name__}).",
+                    )
+                result_queue.put(result)
+                continue
+            if time.monotonic() >= next_poll:
+                if not self._poll_sensor(device, config):
+                    return
+                next_poll = time.monotonic() + config.poll_interval_seconds
+            else:
+                # Drain anything the device pushes so replies stay in order;
+                # the short socket timeout paces this loop.
+                device._send_receive(None)
 
     def _poll_sensor(self, device, config: AppConfig) -> bool:
         response = device.status()
@@ -463,14 +447,6 @@ class DeviceMonitor:
         )
         self.on_reading(reading)
         return reading.ok
-
-    @staticmethod
-    def _start_learning(device) -> None:
-        """Arm IR learning and give the device a moment to enter that mode."""
-        device.study_end()
-        time.sleep(0.2)
-        device.study_start()
-        time.sleep(0.2)
 
     # Convert and transmit one bundled complete-state PIU14 frame.
     @staticmethod
@@ -483,55 +459,5 @@ class DeviceMonitor:
         signal = IRRemoteControlDevice.pulses_to_base64(
             IRRemoteControlDevice.hex_to_pulses(code)
         )
-        device.study_end()
-        time.sleep(0.2)
         device.send_button(signal)
         time.sleep(0.5)
-
-    def _handle_ir_response(self, response: Any, config: AppConfig) -> bool:
-        if not isinstance(response, dict) or not isinstance(
-            response.get("dps"), dict
-        ):
-            return False
-        dps = response["dps"]
-        code = dps.get("202") or dps.get(202)
-        if not isinstance(code, str) or not code.strip():
-            return False
-
-        from tinytuya.Contrib.IRRemoteControlDevice import (
-            IRRemoteControlDevice,
-        )
-
-        pulses = IRRemoteControlDevice.base64_to_pulses(code.strip())
-        if not pulses or len(pulses) < 10:
-            return True
-        decoded = IRRemoteControlDevice.pulses_to_nec(pulses)
-        expected = {
-            TuyaDevice._nec_frame(config.ir_address, value): name
-            for name, value in config.ir_commands.items()
-        }
-        if decoded:
-            frame = int(decoded[0]["hex"], 16)
-            command = expected.get(frame)
-            if command:
-                self.on_ir(command, "observed")
-                return True
-            self._log_unknown(
-                f"unknown NEC hex={decoded[0]['hex']} pulses={len(pulses)}"
-            )
-        else:
-            self._log_unknown(f"unknown protocol pulses={len(pulses)}")
-        return True
-
-    def _log_unknown(self, message: str) -> None:
-        now = time.monotonic()
-        if self.last_unknown and self.last_unknown[0] == message:
-            if now - self.last_unknown[1] < 5:
-                return
-        self.last_unknown = (message, now)
-        path = state_path() / "unknown-ir.log"
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
-        with path.open("a", encoding="utf-8") as log:
-            log.write(f"{timestamp} {message}\n")
-        path.chmod(0o600)

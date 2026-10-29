@@ -37,8 +37,6 @@ ICON_PATH = STATIC_DIR / "localair.png"
 
 # Map validation messages to the Settings field they belong to.
 VALIDATION_FIELDS = {
-    "IP address is required.": "ip_address",
-    "Device ID is required.": "device_id",
     "Protocol version must be between 3.1 and 3.5.": "protocol_version",
     "Poll interval must be between 5 and 3600 seconds.": (
         "poll_interval_seconds"
@@ -83,11 +81,15 @@ def _flag(value: Any) -> bool:
 
 def _validated(config: AppConfig) -> AppConfig:
     try:
-        return config.validated()
-    except SettingsError:
-        raise
+        config = config.validated()
     except ValueError as exc:
         raise SettingsError(str(exc), VALIDATION_FIELDS.get(str(exc))) from None
+    # A config file may leave these blank, but Settings must not.
+    if not config.ip_address:
+        raise SettingsError("IP address is required.", "ip_address")
+    if not config.device_id:
+        raise SettingsError("Device ID is required.", "device_id")
+    return config
 
 
 class LocalAirService:
@@ -107,7 +109,6 @@ class LocalAirService:
             error_message="Starting LocalAIR.",
         )
         self.last_result: CommandResult | None = None
-        self.last_ir: tuple[str, str] | None = None
         self.last_valid_reading: DeviceReading | None = None
         self.climate = ClimateDecision(
             "Disabled", "Automation is off.", None
@@ -122,11 +123,7 @@ class LocalAirService:
             name="localair-climate",
             daemon=True,
         )
-        self.monitor = DeviceMonitor(
-            self.config,
-            self._on_reading,
-            self._on_ir,
-        )
+        self.monitor = DeviceMonitor(self.config, self._on_reading)
 
     def start(self) -> None:
         self.monitor.start()
@@ -144,18 +141,10 @@ class LocalAirService:
             reading = self.latest_reading
             result = self.last_result
             config = self.config
-            last_ir = self.last_ir
             climate = self.climate
             last_valid = self.last_valid_reading
         local_ir_ready = bool(config.local_key and PIU14_CODES_PATH.is_file())
         return {
-            "brand": "LocalAIR",
-            "device": {
-                "ip_address": config.ip_address,
-                "poll_interval_seconds": config.poll_interval_seconds,
-                "timezone": datetime.now().astimezone().tzname()
-                or "Local time",
-            },
             "reading": {
                 "temperature_c": reading.temperature_c,
                 "humidity_percent": reading.humidity_percent,
@@ -191,11 +180,6 @@ class LocalAirService:
                 for name in sorted(IR_COMMANDS)
             },
             "last_result": asdict(result) if result else None,
-            "last_ir": (
-                {"command": last_ir[0], "timestamp": last_ir[1]}
-                if last_ir
-                else None
-            ),
             "events": self.store.recent_activity_events(30),
         }
 
@@ -217,16 +201,15 @@ class LocalAirService:
             self._on_ir(command, "localair")
         return result
 
-    def sync_power(self, power: str | None = None) -> dict[str, str]:
+    # Correct the assumed power state without sending a command.
+    def sync_power(self, power: str) -> dict[str, str]:
+        if power not in {"on", "off"}:
+            raise ValueError("Power state must be on or off.")
         with self.lock:
-            current = self.config.ac_state.get("power")
-            next_power = power or ("off" if current == "on" else "on")
-            if next_power not in {"on", "off"}:
-                raise ValueError("Power state must be on or off.")
             new_state = dict(self.config.ac_state)
-            new_state["power"] = next_power
+            new_state["power"] = power
         self._save_state(new_state, "sync")
-        return {"power": next_power}
+        return {"power": power}
 
     # Persist climate automation state and evaluate it immediately.
     def set_climate_enabled(self, enabled: bool) -> dict[str, bool]:
@@ -405,11 +388,6 @@ class LocalAirService:
             event_command = event or event_command
         self.store.add_ir_event(source, event_command)
         self._save_state(state, f"ir:{command}")
-        with self.lock:
-            self.last_ir = (
-                event_command,
-                datetime.now().astimezone().isoformat(timespec="seconds"),
-            )
 
     def _on_result(self, result: CommandResult) -> None:
         with self.lock:
@@ -594,7 +572,6 @@ def api_history(range: str = "24h") -> JSONResponse:
             "start": start.isoformat(timespec="seconds"),
             "end": now.isoformat(timespec="seconds"),
             "points": store.history(range),
-            "events": store.history_events(range),
             "ac_runs": store.power_runs(start, now, power),
             "today": {
                 "start": midnight.isoformat(timespec="seconds"),
@@ -611,11 +588,6 @@ def api_ir(command: str) -> JSONResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     return JSONResponse(asdict(result), status_code=200 if result.ok else 502)
-
-
-@app.post("/api/sync/power")
-def api_sync_power() -> JSONResponse:
-    return JSONResponse({"ok": True, "state": get_service().sync_power()})
 
 
 @app.post("/api/sync/power/{power}")

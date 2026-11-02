@@ -28,22 +28,22 @@
     <section>
       <div class="intro">
         <h2>Automatic cooling</h2>
-        <p>During the schedule, LocalAIR turns the AC on when the room gets warm and off once it has cooled. When the schedule ends it turns the AC off once and leaves it to you.</p>
+        <p>Set up to four daily periods, each with its own temperatures. During a period, LocalAIR turns the AC on when the room gets warm and off once it has cooled. When a period ends it turns the AC off once and leaves it to you, unless the next period starts straight away.</p>
       </div>
       <div class="fields">
         <label class="switch-row full">
-          <span><strong>Automatic cooling</strong><span>Runs every day during the schedule below</span></span>
+          <span><strong>Automatic cooling</strong><span>Runs every day during the periods below</span></span>
           <input class="switch" type="checkbox" role="switch" name="climate_enabled">
         </label>
-        <label class="f"><span>Start</span><span class="input"><input type="time" name="climate_start" required></span></label>
-        <label class="f"><span>End</span><span class="input"><input type="time" name="climate_end" required></span></label>
-        <label class="f"><span>Turn the AC on when the room reaches</span><span class="input"><input type="number" name="turn_on_at" step="0.1" min="-20" max="60" inputmode="decimal" required><em>°C</em></span></label>
-        <label class="f"><span>Turn the AC off when the room drops to</span><span class="input"><input type="number" name="turn_off_at" step="0.1" min="-20" max="60" inputmode="decimal" required><em>°C</em></span></label>
-        <div class="preview full">
-          <p id="bandText"></p>
-          <svg id="bandPreview" height="64" aria-hidden="true"></svg>
+        <div class="timeline full">
+          <p id="timelineText"></p>
+          <svg id="timeline" height="58" role="img" aria-label="Periods across the day"></svg>
         </div>
-        <label class="f"><span>AC temperature when cooling</span><span class="input"><input type="number" name="aircon_temperature" min="16" max="30" step="1" inputmode="numeric" required><em>°C</em></span><small>What the AC is set to when automation turns it on (16–30 °C).</small></label>
+        <div class="periods full" id="periods"></div>
+        <div class="full add-row">
+          <button class="btn" type="button" id="addPeriod">Add period</button>
+          <span class="hint" id="periodHint"></span>
+        </div>
         <label class="f"><span>Stop if the sensor goes quiet for</span><span class="input"><input type="number" name="sensor_timeout_seconds" min="5" max="86400" step="1" inputmode="numeric" required><em>seconds</em></span><small>The AC is turned off if there's no fresh reading for this long.</small></label>
       </div>
     </section>

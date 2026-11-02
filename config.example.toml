@@ -8,16 +8,31 @@ local_key = "YOUR_LOCAL_KEY"
 protocol_version = 3.5
 poll_interval_seconds = 30
 
-# During the schedule, turn the AC on at turn_on_at and off at turn_off_at
-# (room temperatures, °C). When the schedule ends the AC is turned off once.
+# Up to four daily periods. During a period, turn the AC on at turn_on_at and
+# off at turn_off_at (room temperatures, °C). When a period ends the AC is
+# turned off once, unless the next period starts at the same time. An end_time
+# earlier than start_time runs past midnight. Periods must not overlap.
 [climate]
 enabled = false
+sensor_timeout_seconds = 120
+
+[[climate.periods]]
+name = "Day"
+enabled = true
 start_time = "10:00"
-end_time = "16:00"
+end_time = "15:30"
 turn_on_at = 24.0
 turn_off_at = 22.0
 aircon_temperature = 16
-sensor_timeout_seconds = 120
+
+[[climate.periods]]
+name = "Night"
+enabled = true
+start_time = "16:00"
+end_time = "09:00"
+turn_on_at = 27.0
+turn_off_at = 25.0
+aircon_temperature = 20
 
 [server]
 host = "0.0.0.0"

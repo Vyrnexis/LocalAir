@@ -15,7 +15,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import AppConfig, database_path, load_config, save_config
+from .config import (
+    AppConfig,
+    ClimatePeriod,
+    ConfigError,
+    database_path,
+    load_config,
+    save_config,
+)
 from .device import (
     ClimateDecision,
     CommandResult,
@@ -35,42 +42,26 @@ from .storage import RANGE_HOURS, LocalAirStore
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 ICON_PATH = STATIC_DIR / "localair.png"
 
-# Map validation messages to the Settings field they belong to.
-VALIDATION_FIELDS = {
-    "Protocol version must be between 3.1 and 3.5.": "protocol_version",
-    "Poll interval must be between 5 and 3600 seconds.": (
-        "poll_interval_seconds"
-    ),
-    "Schedule times must use HH:MM format.": "climate_start",
-    "Schedule start must be before schedule end.": "climate_end",
-    "The turn-off temperature must be lower than the turn-on temperature.": (
-        "turn_off_at"
-    ),
-    "Air-conditioner temperature must be 16–30°C.": "aircon_temperature",
-    "Sensor timeout must be at least the polling interval.": (
-        "sensor_timeout_seconds"
-    ),
-    "Server port must be between 1 and 65535.": "server_port",
-    "History retention must be between 1 and 365 days.": (
-        "history_retention_days"
-    ),
-}
+# Settings errors and config validation errors are the same thing: a message
+# plus the form field it belongs to.
+SettingsError = ConfigError
 
 
-class SettingsError(ValueError):
-    """A settings validation error tied to one form field."""
-
-    def __init__(self, message: str, field: str | None = None) -> None:
-        super().__init__(message)
-        self.field = field
-
-
-def _number(data: dict[str, Any], key: str, current, kind, label: str):
+def _number(
+    data: dict[str, Any],
+    key: str,
+    current,
+    kind,
+    label: str,
+    field: str | None = None,
+):
     value = data.get(key, current)
     try:
         return kind(value)
     except (TypeError, ValueError):
-        raise SettingsError(f"{label} must be a number.", key) from None
+        raise SettingsError(
+            f"{label} must be a number.", field or key
+        ) from None
 
 
 def _flag(value: Any) -> bool:
@@ -79,11 +70,60 @@ def _flag(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+# Build the period list from submitted values. A submitted list replaces the
+# saved one, and each period is complete in itself: fields left out take the
+# defaults, never values from whichever saved period shared its position.
+def _periods(data: dict[str, Any], current: AppConfig) -> tuple[ClimatePeriod, ...]:
+    submitted = data.get("climate_periods")
+    if submitted is None:
+        return current.climate_periods
+    if not isinstance(submitted, list) or not all(
+        isinstance(period, dict) for period in submitted
+    ):
+        raise SettingsError("Periods must be a list.", "climate_periods")
+    default = ClimatePeriod()
+    periods = []
+    for index, raw in enumerate(submitted):
+        prefix = f"climate_periods.{index}"
+        periods.append(
+            ClimatePeriod(
+                name=str(raw.get("name") or ""),
+                enabled=_flag(raw.get("enabled", default.enabled)),
+                start=str(raw.get("start", default.start)),
+                end=str(raw.get("end", default.end)),
+                turn_on_at=_number(
+                    raw, "turn_on_at", default.turn_on_at, float,
+                    "Turn-on temperature", f"{prefix}.turn_on_at",
+                ),
+                turn_off_at=_number(
+                    raw, "turn_off_at", default.turn_off_at, float,
+                    "Turn-off temperature", f"{prefix}.turn_off_at",
+                ),
+                aircon_temperature=_number(
+                    raw, "aircon_temperature", default.aircon_temperature, int,
+                    "AC temperature", f"{prefix}.aircon_temperature",
+                ),
+            )
+        )
+    return tuple(periods)
+
+
+def _period_json(index: int, period: ClimatePeriod) -> dict[str, Any]:
+    return {
+        "index": index,
+        "name": period.name,
+        "label": period.label(index),
+        "enabled": period.enabled,
+        "start": period.start,
+        "end": period.end,
+        "turn_on_at": period.turn_on_at,
+        "turn_off_at": period.turn_off_at,
+        "aircon_temperature": period.aircon_temperature,
+    }
+
+
 def _validated(config: AppConfig) -> AppConfig:
-    try:
-        config = config.validated()
-    except ValueError as exc:
-        raise SettingsError(str(exc), VALIDATION_FIELDS.get(str(exc))) from None
+    config = config.validated()
     # A config file may leave these blank, but Settings must not.
     if not config.ip_address:
         raise SettingsError("IP address is required.", "ip_address")
@@ -115,6 +155,7 @@ class LocalAirService:
         )
         self.last_climate_attempt: tuple[str, float] | None = None
         self.climate_active = False
+        self.climate_period: int | None = None
         self.climate_shutdown_pending = False
         self.climate_event = threading.Event()
         self.stopping = False
@@ -165,22 +206,36 @@ class LocalAirService:
                 else None
             ),
             "ac_state": dict(config.ac_state),
-            "climate": {
-                "enabled": config.climate_enabled,
-                "status": climate.status,
-                "detail": climate.detail,
-                "start_time": config.climate_start,
-                "end_time": config.climate_end,
-                "turn_on_at": config.turn_on_at,
-                "turn_off_at": config.turn_off_at,
-                "aircon_temperature": config.aircon_temperature,
-            },
+            "climate": self._climate_snapshot(config, climate),
             "ir_commands": {
                 name: local_ir_ready
                 for name in sorted(IR_COMMANDS)
             },
             "last_result": asdict(result) if result else None,
             "events": self.store.recent_activity_events(30),
+        }
+
+    # The period list plus the period the dashboard should describe: the one
+    # whose window is open now (even with cooling switched off), else the next
+    # to start, else the first.
+    @staticmethod
+    def _climate_snapshot(
+        config: AppConfig, climate: ClimateDecision
+    ) -> dict[str, Any]:
+        now = datetime.now().astimezone()
+        periods = config.climate_periods
+        current = config.active_period(now) or config.next_period(now)
+        shown = current[0] if current else 0
+        return {
+            "enabled": config.climate_enabled,
+            "status": climate.status,
+            "detail": climate.detail,
+            "active": climate.period is not None,
+            "period": _period_json(shown, periods[shown]),
+            "periods": [
+                _period_json(index, period)
+                for index, period in enumerate(periods)
+            ],
         }
 
     def send_ir(self, command: str) -> CommandResult:
@@ -234,11 +289,10 @@ class LocalAirService:
             "protocol_version": config.protocol_version,
             "poll_interval_seconds": config.poll_interval_seconds,
             "climate_enabled": config.climate_enabled,
-            "climate_start": config.climate_start,
-            "climate_end": config.climate_end,
-            "turn_on_at": config.turn_on_at,
-            "turn_off_at": config.turn_off_at,
-            "aircon_temperature": config.aircon_temperature,
+            "climate_periods": [
+                _period_json(index, period)
+                for index, period in enumerate(config.climate_periods)
+            ],
             "sensor_timeout_seconds": config.sensor_timeout_seconds,
             "server_host": config.server_host,
             "server_port": config.server_port,
@@ -316,25 +370,7 @@ class LocalAirService:
                 climate_enabled=_flag(
                     data.get("climate_enabled", current.climate_enabled)
                 ),
-                climate_start=str(
-                    data.get("climate_start", current.climate_start)
-                ),
-                climate_end=str(data.get("climate_end", current.climate_end)),
-                turn_on_at=_number(
-                    data, "turn_on_at", current.turn_on_at, float,
-                    "Turn-on temperature",
-                ),
-                turn_off_at=_number(
-                    data, "turn_off_at", current.turn_off_at, float,
-                    "Turn-off temperature",
-                ),
-                aircon_temperature=_number(
-                    data,
-                    "aircon_temperature",
-                    current.aircon_temperature,
-                    int,
-                    "AC temperature",
-                ),
+                climate_periods=_periods(data, current),
                 sensor_timeout_seconds=_number(
                     data,
                     "sensor_timeout_seconds",
@@ -372,13 +408,17 @@ class LocalAirService:
         self.store.add_reading(reading)
 
     def _on_ir(
-        self, command: str, source: str, event: str | None = None
+        self,
+        command: str,
+        source: str,
+        event: str | None = None,
+        climate_temperature: int | None = None,
     ) -> None:
         with self.lock:
             config = self.config
             state = update_ac_state(config.ac_state, command)
-            if command == "climate_on":
-                state["temperature"] = str(config.aircon_temperature)
+            if command == "climate_on" and climate_temperature is not None:
+                state["temperature"] = str(climate_temperature)
             event_command = command
             if command == "power":
                 event_command = f"power_{state.get('power', 'unknown')}"
@@ -409,7 +449,9 @@ class LocalAirService:
             self.climate_event.clear()
 
     # Apply only state transitions and retry failed local commands after one minute.
-    # When the schedule ends, send one Off and then leave the AC to manual control.
+    # When a period ends, send one Off and then leave the AC to manual control.
+    # When one period hands straight over to the next while the AC is cooling,
+    # resend On if the new period's AC temperature differs.
     def _evaluate_climate(self) -> None:
         now = datetime.now().astimezone()
         with self.lock:
@@ -420,6 +462,19 @@ class LocalAirService:
         active = decision.desired_power is not None
         with self.lock:
             self.climate = decision
+            if (
+                self.climate_period is not None
+                and decision.period is not None
+                and decision.period != self.climate_period
+                and power == "on"
+                and decision.desired_power == "on"
+                and config.ac_state.get("temperature")
+                != str(
+                    config.climate_periods[decision.period].aircon_temperature
+                )
+            ):
+                self.last_climate_attempt = None
+            self.climate_period = decision.period
             if self.climate_active and not active and config.climate_enabled:
                 self.climate_shutdown_pending = True
                 self.last_climate_attempt = None
@@ -431,6 +486,12 @@ class LocalAirService:
         desired_power = "off" if shutdown else decision.desired_power
         if desired_power is None:
             return
+        # Only an active period turns the AC on, so Off needs no temperature.
+        aircon_temperature = (
+            config.climate_periods[decision.period].aircon_temperature
+            if decision.period is not None
+            else None
+        )
 
         command = f"climate_{desired_power}"
         first_confirmation = last_attempt is None
@@ -444,7 +505,7 @@ class LocalAirService:
         key_name, message = local_ir_instruction(
             command,
             config.ac_state,
-            config.aircon_temperature,
+            aircon_temperature,
         )
         result = self.monitor.send_ir(key_name)
         if result.ok:
@@ -455,7 +516,10 @@ class LocalAirService:
                 with self.lock:
                     self.climate_shutdown_pending = False
             self._on_ir(
-                command, "climate", "schedule_end" if shutdown else None
+                command,
+                "climate",
+                "schedule_end" if shutdown else None,
+                aircon_temperature,
             )
 
     def _save_state(self, state: dict[str, str], source: str) -> None:

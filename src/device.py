@@ -54,9 +54,12 @@ class ClimateDecision:
     status: str
     detail: str
     desired_power: str | None
+    # Index of the active period, or None outside every period.
+    period: int | None = None
 
 
-# Decide the required AC state from schedule, sensor freshness, and hysteresis.
+# Decide the required AC state from the active period, sensor freshness, and
+# hysteresis.
 def decide_climate(
     config: AppConfig,
     reading: DeviceReading | None,
@@ -66,24 +69,33 @@ def decide_climate(
     if not config.climate_enabled:
         return ClimateDecision("Disabled", "Automation is off.", None)
 
-    current_time = now.strftime("%H:%M")
-    schedule = f"{config.climate_start}–{config.climate_end}"
-    # Outside the window the AC is left to manual control; the service sends
-    # one Off when the window ends.
-    if not config.climate_start <= current_time < config.climate_end:
-        return ClimateDecision(
-            "Outside schedule",
-            f"Active daily {schedule}. Manual control until then.",
-            None,
-        )
+    active = config.active_period(now)
+    # Outside every period the AC is left to manual control; the service
+    # sends one Off when a period ends.
+    if active is None:
+        upcoming = config.next_period(now)
+        if upcoming is None:
+            detail = "Every period is switched off. Manual control."
+        else:
+            index, period = upcoming
+            detail = (
+                f"{period.label(index)} starts at {period.start}. "
+                "Manual control until then."
+            )
+        return ClimateDecision("Outside schedule", detail, None)
+
+    index, period = active
+
+    def decision(status: str, detail: str, desired: str) -> ClimateDecision:
+        return ClimateDecision(status, detail, desired, index)
 
     if reading is None:
-        return ClimateDecision(
+        return decision(
             "Sensor unavailable", "Waiting for a valid reading.", "off"
         )
     age = max(0.0, (now - reading.timestamp).total_seconds())
     if age > config.sensor_timeout_seconds:
-        return ClimateDecision(
+        return decision(
             "Sensor unavailable",
             f"Last valid reading was {round(age)} seconds ago.",
             "off",
@@ -91,24 +103,24 @@ def decide_climate(
 
     temperature = reading.temperature_c
     if temperature is None:
-        return ClimateDecision(
+        return decision(
             "Sensor unavailable", "Waiting for a valid reading.", "off"
         )
-    if temperature >= config.turn_on_at:
-        return ClimateDecision(
+    if temperature >= period.turn_on_at:
+        return decision(
             "Cooling",
-            f"Room is at or above {config.turn_on_at:g}°C.",
+            f"Room is at or above {period.turn_on_at:g}°C.",
             "on",
         )
-    if temperature <= config.turn_off_at:
-        return ClimateDecision(
+    if temperature <= period.turn_off_at:
+        return decision(
             "Holding",
-            f"Room reached {config.turn_off_at:g}°C or below.",
+            f"Room reached {period.turn_off_at:g}°C or below.",
             "off",
         )
-    return ClimateDecision(
+    return decision(
         "Cooling" if power == "on" else "Holding",
-        f"Inside the {config.turn_off_at:g}–{config.turn_on_at:g}°C comfort band.",
+        f"Inside the {period.turn_off_at:g}–{period.turn_on_at:g}°C comfort band.",
         "on" if power == "on" else "off",
     )
 
@@ -142,7 +154,7 @@ def update_ac_state(state: dict[str, str], command: str) -> dict[str, str]:
 def local_ir_instruction(
     command: str,
     state: dict[str, str],
-    climate_temperature: int = 16,
+    climate_temperature: int | None = None,
 ) -> tuple[str, str]:
     if command == "climate_off" or (
         command == "power" and state.get("power") == "on"
@@ -155,6 +167,8 @@ def local_ir_instruction(
         return "Power Off", message
 
     if command == "climate_on":
+        if climate_temperature is None:
+            raise ValueError("Climate control needs an AC temperature.")
         temperature = climate_temperature
         message = f"Climate control cooling at {temperature}°C."
     else:

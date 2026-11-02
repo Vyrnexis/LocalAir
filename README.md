@@ -16,9 +16,10 @@ and is built to sit on an Unraid server.
 
 - **Shows the room at a glance.** Temperature, humidity, where the room sits
   against your comfort band, and a timeline of when the AC ran today.
-- **Cools on a schedule.** During the hours you choose, it turns the AC on when
-  the room gets warm and off once it has cooled. When the schedule ends it turns
-  the AC off once and hands control back to you.
+- **Cools on a schedule.** Up to four daily periods, each with its own
+  temperatures. During a period it turns the AC on when the room gets warm and
+  off once it has cooled. When a period ends it turns the AC off once and hands
+  control back to you.
 - **Lets you control the AC directly.** Power and 16–30 °C from any browser on
   your network, phone included.
 - **Keeps history.** Linked temperature and humidity charts for the last hour,
@@ -40,8 +41,8 @@ and is built to sit on an Unraid server.
 
 ## How automatic cooling works
 
-For example, with a schedule of 10:00 to 15:30, on at 24 °C, off at 22 °C, and
-the AC set to 16 °C:
+For example, with a period from 10:00 to 15:30, on at 24 °C, off at 22 °C,
+and the AC set to 16 °C:
 
 | When | What LocalAIR does |
 | --- | --- |
@@ -53,9 +54,27 @@ the AC set to 16 °C:
 | 15:30 | Turns the AC off once. |
 | After 15:30 | Nothing. The AC is yours to control again. |
 
+### More than one period
+
+Add up to four periods in Settings, for example a cooler day period and a
+warmer one overnight:
+
+| Period | Runs | On at | Off at | AC set to |
+| --- | --- | --- | --- | --- |
+| Day | 10:00 – 15:30 | 24 °C | 22 °C | 16 °C |
+| Night | 16:00 – 09:00 | 27 °C | 25 °C | 20 °C |
+
+- An end time earlier than the start time runs past midnight.
+- Periods can't overlap. They can meet end to end (one ending at 16:00, the next
+  starting at 16:00). Then the AC isn't turned off between them, and if it's
+  running it is sent the new period's temperature.
+- Time between periods, like 15:30 – 16:00 above, is manual. The AC is turned
+  off once when the earlier period ends.
+- Each period can be switched off without deleting it.
+
 Automatic cooling is off until you switch it on, either on the dashboard or in
-Settings. Inside the schedule it may override manual changes when the room
-crosses a threshold; outside the schedule it never does.
+Settings. Inside a period it may override manual changes when the room crosses
+a threshold; outside every period it never does.
 
 IR is one-way, so LocalAIR can't ask the AC what it's doing, and it doesn't see
 presses on the AC's own remote. It keeps track of the state it last sent. If
@@ -154,7 +173,7 @@ Almost everything is set on the **Settings** page and saved to
 
 | Section | Settings |
 | --- | --- |
-| Automatic cooling | On/off, daily start and end, turn-on and turn-off room temperatures, AC temperature while cooling, sensor timeout |
+| Automatic cooling | On/off, sensor timeout, and up to four daily periods, each with a name, start and end, turn-on and turn-off room temperatures, and AC temperature while cooling |
 | Sensor connection | IP address, device ID, local key, protocol version, how often to read the sensor |
 | Advanced | Days of history to keep, web host and port |
 

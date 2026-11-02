@@ -38,7 +38,24 @@ label.f small { color: var(--muted); font-size: 13px; }
 .preview p { margin: 0 0 4px; color: var(--muted); font-size: 14px; }
 .preview p strong { color: var(--ink); font-weight: 600; }
 .preview p.bad { color: var(--bad); }
-#bandPreview { display: block; width: 100%; overflow: visible; }
+.band-preview { display: block; width: 100%; overflow: visible; }
+
+.timeline p { margin: 0 0 8px; color: var(--muted); font-size: 14px; }
+.timeline p.bad { color: var(--bad); font-weight: 500; }
+#timeline { display: block; width: 100%; overflow: visible; }
+
+.periods { display: grid; gap: 16px; }
+.period { display: grid; gap: 16px; padding: 16px 18px 18px; border: 1px solid var(--line); border-radius: 14px; }
+.period-head { display: flex; align-items: center; gap: 14px; }
+.period-head .name { flex: 1; }
+.period-head .name input { font-weight: 600; }
+.period-on { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; font-weight: 600; cursor: pointer; }
+.period-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 20px; }
+.span-note { margin: 0; align-self: end; padding-bottom: 12px; color: var(--muted); font-size: 14px; }
+.span-note.bad { color: var(--bad); }
+.period.disabled .period-fields, .period.disabled .preview { opacity: .55; }
+.add-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 .test { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; }
 .result { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-weight: 500; }
@@ -61,6 +78,8 @@ label.f small { color: var(--muted); font-size: 13px; }
 @media (max-width: 760px) {
   section { grid-template-columns: 1fr; gap: 18px; padding: 26px 0; }
   .fields { grid-template-columns: 1fr; }
+  .period-fields { grid-template-columns: 1fr; }
+  .span-note { padding-bottom: 0; }
   .savebar > div { flex-wrap: wrap; }
   .savebar span { flex-basis: 100%; }
   .savebar .btn, .savebar .primary { flex: 1; }

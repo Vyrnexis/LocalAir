@@ -50,6 +50,43 @@ function clockToDate(value, base = new Date()) {
   return date;
 }
 
+// When a period runs on the calendar day of base, split at midnight.
+function periodWindows(period, base) {
+  const open = clockToDate(period.start, base).getTime();
+  const close = clockToDate(period.end, base).getTime();
+  const dayStart = clockToDate("00:00", base).getTime();
+  const nextDay = new Date(base);
+  nextDay.setDate(nextDay.getDate() + 1);
+  // The next local midnight, which is 23 or 25 hours away on DST change days.
+  const dayEnd = clockToDate("00:00", nextDay).getTime();
+  return open < close ? [[open, close]] : [[dayStart, close], [open, dayEnd]];
+}
+
+// Each enabled period's comfort band over the times it ran within [start, end].
+function bandSegments(climate, start, end) {
+  const segments = [];
+  for (let day = new Date(start); day.getTime() < end + DAY; day.setDate(day.getDate() + 1)) {
+    for (const period of enabledPeriods(climate)) {
+      for (const [a, b] of periodWindows(period, day)) {
+        const from = Math.max(start, a);
+        const to = Math.min(end, b);
+        if (to > from) segments.push({from, to, off: period.turn_off_at, on: period.turn_on_at});
+      }
+    }
+  }
+  return segments;
+}
+
+const enabledPeriods = climate => climate.periods.filter(period => period.enabled);
+
+// What happens when a period ends: the next one takes over, or the AC goes off.
+function periodEnding(climate, period) {
+  const next = enabledPeriods(climate).find(other => other.index !== period.index && other.start === period.end);
+  return next
+    ? `${period.label} ends at ${fmtClock(period.end)}, then ${next.label} takes over.`
+    : `${period.label} ends at ${fmtClock(period.end)}, then the AC is turned off.`;
+}
+
 function fmtClock(value) {
   return clockToDate(value).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
 }
@@ -125,24 +162,26 @@ function renderStatus() {
 
 function renderVerdict(temperature) {
   const {climate, ac_state: ac} = state.status;
+  const period = climate.period;
   const power = ac.power === "on" ? "on" : "off";
   let title = "Waiting for a sensor reading";
   if (temperature != null) {
-    title = temperature > climate.turn_on_at
+    title = temperature > period.turn_on_at
       ? "Above your comfort band"
-      : temperature < climate.turn_off_at
+      : temperature < period.turn_off_at
         ? "Below your comfort band"
         : "Inside your comfort band";
   }
   let detail;
   if (!climate.enabled) detail = `The AC is ${power}. Automatic cooling is turned off.`;
-  else if (climate.status === "Outside schedule") detail = `The AC is ${power}. Automatic cooling starts at ${fmtClock(climate.start_time)}.`;
-  else if (climate.status === "Cooling") detail = `The AC is cooling. It turns off when the room reaches ${fmtDeg(climate.turn_off_at)}.`;
+  else if (!enabledPeriods(climate).length) detail = `The AC is ${power}. Every period is switched off.`;
+  else if (climate.status === "Outside schedule") detail = `The AC is ${power}. ${period.label} starts at ${fmtClock(period.start)}.`;
+  else if (climate.status === "Cooling") detail = `The AC is cooling. It turns off when the room reaches ${fmtDeg(period.turn_off_at)}.`;
   else if (climate.status === "Sensor unavailable") detail = climate.detail;
-  else detail = `The AC turns on if the room reaches ${fmtDeg(climate.turn_on_at)}.`;
+  else detail = `The AC turns on if the room reaches ${fmtDeg(period.turn_on_at)}.`;
   $("verdict").firstChild.textContent = title;
   $("verdictDetail").textContent = detail;
-  $("bandLabel").textContent = `${fmt1(climate.turn_off_at)}–${fmt1(climate.turn_on_at)} °C`;
+  $("bandLabel").textContent = `${fmt1(period.turn_off_at)}–${fmt1(period.turn_on_at)} °C`;
 }
 
 function renderAirConditioner() {
@@ -169,23 +208,31 @@ function renderAutomation() {
   const toggle = $("climateToggle");
   toggle.setAttribute("aria-pressed", String(climate.enabled));
   toggle.closest(".panel").classList.toggle("off", !climate.enabled);
-  $("ruleSchedule").textContent = `${climate.start_time} – ${climate.end_time}`;
-  $("ruleOn").textContent = fmtDeg(climate.turn_on_at);
-  $("ruleOff").textContent = fmtDeg(climate.turn_off_at);
+  const period = climate.period;
+  const count = enabledPeriods(climate).length;
+  $("ruleName").textContent = count > 1 ? period.label : "Schedule";
+  $("ruleSchedule").textContent = `${period.start} – ${period.end}`;
+  $("ruleOn").textContent = fmtDeg(period.turn_on_at);
+  $("ruleOff").textContent = fmtDeg(period.turn_off_at);
 
-  const start = fmtClock(climate.start_time);
-  const end = fmtClock(climate.end_time);
-  const acTemp = `${climate.aircon_temperature} °C`;
+  const start = fmtClock(period.start);
+  const end = fmtClock(period.end);
+  const acTemp = `${period.aircon_temperature} °C`;
   let title, detail, glyph = "";
   if (!climate.enabled) {
     title = "Automatic cooling is off";
-    detail = `Turn it on to keep the room between ${fmtDeg(climate.turn_off_at)} and ${fmtDeg(climate.turn_on_at)} from ${start} to ${end}.`;
+    detail = count > 1
+      ? `Turn it on to run your ${count} periods: ${enabledPeriods(climate).map(p => p.label).join(", ")}.`
+      : `Turn it on to keep the room between ${fmtDeg(period.turn_off_at)} and ${fmtDeg(period.turn_on_at)} from ${start} to ${end}.`;
+  } else if (!count) {
+    title = "Every period is switched off";
+    detail = "Switch a period on in Settings. Until then the AC is yours to control.";
   } else if (climate.status === "Outside schedule") {
-    title = `Waiting for the schedule to open at ${start}`;
-    detail = `Until then the AC is yours to control. From ${start} it turns on at ${acTemp} whenever the room reaches ${fmtDeg(climate.turn_on_at)}.`;
+    title = `Waiting for ${count > 1 ? period.label : "the schedule"} to start at ${start}`;
+    detail = `Until then the AC is yours to control. From ${start} it turns on at ${acTemp} whenever the room reaches ${fmtDeg(period.turn_on_at)}.`;
   } else if (climate.status === "Cooling") {
-    title = `Cooling until the room reaches ${fmtDeg(climate.turn_off_at)}`;
-    detail = `The AC is set to ${ac.temperature || climate.aircon_temperature} °C. The schedule ends at ${end}, then the AC is turned off.`;
+    title = `Cooling until the room reaches ${fmtDeg(period.turn_off_at)}`;
+    detail = `The AC is set to ${ac.temperature || period.aircon_temperature} °C. ${periodEnding(climate, period)}`;
     glyph = "active";
   } else if (climate.status === "Sensor unavailable") {
     title = "No recent sensor reading";
@@ -193,7 +240,7 @@ function renderAutomation() {
     glyph = "alert";
   } else {
     title = "Holding";
-    detail = `The AC turns on at ${acTemp} if the room reaches ${fmtDeg(climate.turn_on_at)}. The schedule ends at ${end}.`;
+    detail = `The AC turns on at ${acTemp} if the room reaches ${fmtDeg(period.turn_on_at)}. ${periodEnding(climate, period)}`;
     glyph = "active";
   }
   $("nextTitle").textContent = title;
@@ -207,7 +254,7 @@ function drawBandGauge(temperature) {
   const svg = $("bandGauge");
   clear(svg);
   if (!state.status) return;
-  const {turn_on_at: on, turn_off_at: off} = state.status.climate;
+  const {turn_on_at: on, turn_off_at: off} = state.status.climate.period;
   const values = [on, off, ...(temperature == null ? [] : [temperature])];
   let lo = Math.min(18, Math.floor(Math.min(...values) - 1));
   let hi = Math.max(30, Math.ceil(Math.max(...values) + 1));
@@ -258,12 +305,14 @@ function drawTodayStrip() {
 
   el(svg, "rect", {x: x(start), y, width: x(end) - x(start), height: h, rx: 6, fill: css("--surface")});
   const day = new Date(start);
-  const open = clockToDate(climate.start_time, day).getTime();
-  const close = clockToDate(climate.end_time, day).getTime();
-  el(svg, "rect", {
-    x: x(open), y: y - 5, width: x(close) - x(open), height: h + 10, rx: 7, fill: "none",
-    stroke: climate.enabled ? css("--muted") : css("--faint"), "stroke-dasharray": "3 3",
-  });
+  for (const period of enabledPeriods(climate)) {
+    for (const [open, close] of periodWindows(period, day)) {
+      el(svg, "rect", {
+        x: x(open), y: y - 5, width: x(close) - x(open), height: h + 10, rx: 7, fill: "none",
+        stroke: climate.enabled ? css("--muted") : css("--faint"), "stroke-dasharray": "3 3",
+      });
+    }
+  }
   let ran = 0;
   for (const run of data.today.runs) {
     const a = Math.max(start, Date.parse(run.start));
@@ -397,10 +446,8 @@ function drawChart(svg, options) {
   // Schedule windows, then AC running periods behind everything else.
   const climate = state.status?.climate;
   if (climate && state.range !== "30d") {
-    for (let day = new Date(f.start); day.getTime() < f.end + DAY; day.setDate(day.getDate() + 1)) {
-      const open = Math.max(f.start, clockToDate(climate.start_time, day).getTime());
-      const close = Math.min(f.end, clockToDate(climate.end_time, day).getTime());
-      if (close > open) el(svg, "rect", {x: f.x(open), y: f.top, width: f.x(close) - f.x(open), height: plotHeight, fill: css("--schedule")});
+    for (const {from, to} of bandSegments(climate, f.start, f.end)) {
+      el(svg, "rect", {x: f.x(from), y: f.top, width: f.x(to) - f.x(from), height: plotHeight, fill: css("--schedule")});
     }
   }
   for (const [a, b] of acRuns()) {
@@ -408,10 +455,14 @@ function drawChart(svg, options) {
     const to = Math.min(b, f.end);
     if (to > from) el(svg, "rect", {x: f.x(from), y: f.top, width: Math.max(1, f.x(to) - f.x(from)), height: plotHeight, fill: css("--cool-tint")});
   }
-  if (band) {
-    el(svg, "rect", {x: f.left, y: y(band[1]), width: f.width - f.left - f.right, height: y(band[0]) - y(band[1]), fill: css("--band")});
-    for (const value of band) {
-      el(svg, "line", {x1: f.left, x2: f.width - f.right, y1: y(value), y2: y(value), stroke: css("--faint"), "stroke-dasharray": "4 4"});
+  // Comfort bands: each period's over its own hours, or one band across the
+  // whole chart (from: null) when the range is too long to split.
+  for (const segment of band || []) {
+    const x1 = segment.from == null ? f.left : f.x(segment.from);
+    const x2 = segment.to == null ? f.width - f.right : f.x(segment.to);
+    el(svg, "rect", {x: x1, y: y(segment.on), width: x2 - x1, height: y(segment.off) - y(segment.on), fill: css("--band")});
+    for (const value of [segment.off, segment.on]) {
+      el(svg, "line", {x1, x2, y1: y(value), y2: y(value), stroke: css("--faint"), "stroke-dasharray": "4 4"});
     }
   }
   for (let value = lo; value <= hi + 1e-9; value += step) {
@@ -448,14 +499,24 @@ function drawHistory() {
   const empty = points.length === 0;
   $("chartEmpty").hidden = !empty;
   const climate = state.status.climate;
-  const temps = empty ? [climate.turn_off_at, climate.turn_on_at] : points.map(p => p.temp);
+  const current = climate.period;
+  // Over 30 days the bands would alternate too often to read; show the
+  // current period's across the whole chart instead.
+  const {start, end} = historyWindow();
+  const bands = state.range === "30d"
+    ? [{from: null, to: null, off: current.turn_off_at, on: current.turn_on_at}]
+    : bandSegments(climate, start, end);
+  const limits = bands.length
+    ? bands.flatMap(band => [band.off, band.on])
+    : [current.turn_off_at, current.turn_on_at];
+  const temps = empty ? limits : points.map(p => p.temp);
   const hums = empty ? [40, 70] : points.map(p => p.hum);
-  const tempSpan = Math.max(...temps, climate.turn_on_at) - Math.min(...temps, climate.turn_off_at);
+  const tempSpan = Math.max(...temps, ...limits) - Math.min(...temps, ...limits);
   const tempStep = tempSpan > 10 ? 2 : 1;
   drawChart($("tempChart"), {
     height: 230, key: "temp", color: css("--warm"), points, step: tempStep,
-    domain: niceDomain([...temps, climate.turn_off_at - .5, climate.turn_on_at + .5], 4, tempStep),
-    band: [climate.turn_off_at, climate.turn_on_at], showAxis: false,
+    domain: niceDomain([...temps, Math.min(...limits) - .5, Math.max(...limits) + .5], 4, tempStep),
+    band: bands, showAxis: false,
   });
   drawChart($("humidChart"), {
     height: 150, key: "hum", color: css("--humid"), points, step: 10,

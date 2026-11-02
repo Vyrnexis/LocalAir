@@ -203,6 +203,40 @@ function renderAirConditioner() {
   }
 }
 
+// One row per switched-on period, marking the one running now, or the next
+// to start while cooling is between periods.
+function renderRules(climate) {
+  const rules = $("rules");
+  const periods = enabledPeriods(climate);
+  const rows = periods.length
+    ? [...periods].sort((a, b) => a.start.localeCompare(b.start))
+    : [climate.period];
+  const tag = climate.enabled && periods.length
+    ? climate.active ? "now" : "next"
+    : "";
+  rules.replaceChildren();
+  for (const period of rows) {
+    const current = tag && period.index === climate.period.index;
+    const label = rows.length > 1 ? period.label : "Schedule";
+    const cells = [
+      [current ? `${label} · ${tag}` : label, `${period.start} – ${period.end}`],
+      ["Turn on at", fmtDeg(period.turn_on_at)],
+      ["Turn off at", fmtDeg(period.turn_off_at)],
+      ["AC set to", `${period.aircon_temperature} °C`],
+    ];
+    for (const [name, value] of cells) {
+      const cell = document.createElement("div");
+      if (current) cell.className = "current";
+      const span = document.createElement("span");
+      span.textContent = name;
+      const strong = document.createElement("strong");
+      strong.textContent = value;
+      cell.append(span, strong);
+      rules.append(cell);
+    }
+  }
+}
+
 function renderAutomation() {
   const {climate, ac_state: ac} = state.status;
   const toggle = $("climateToggle");
@@ -210,10 +244,7 @@ function renderAutomation() {
   toggle.closest(".panel").classList.toggle("off", !climate.enabled);
   const period = climate.period;
   const count = enabledPeriods(climate).length;
-  $("ruleName").textContent = count > 1 ? period.label : "Schedule";
-  $("ruleSchedule").textContent = `${period.start} – ${period.end}`;
-  $("ruleOn").textContent = fmtDeg(period.turn_on_at);
-  $("ruleOff").textContent = fmtDeg(period.turn_off_at);
+  renderRules(climate);
 
   const start = fmtClock(period.start);
   const end = fmtClock(period.end);

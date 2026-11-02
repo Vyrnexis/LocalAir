@@ -42,9 +42,11 @@ main { width: min(1280px, calc(100% - 32px)); margin: 0 auto; padding: 22px 0 48
 .fix { margin-top: 10px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
 .link { border: 0; background: none; padding: 0 2px; color: var(--ink); font-weight: 600; text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 3px; }
 
-.rules { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border-radius: 12px; overflow: hidden; }
+.rules { display: grid; grid-template-columns: minmax(0, 1.5fr) repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line); border-radius: 12px; overflow: hidden; }
 .rules div { background: var(--surface-2); padding: 12px 14px; min-width: 0; }
-.rules span { display: block; color: var(--muted); font-size: 13px; }
+.rules div.current { background: color-mix(in srgb, var(--cool) 14%, var(--surface-2)); }
+.rules span { display: block; color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rules .current span { color: var(--cool); font-weight: 600; }
 .rules strong { font: 500 22px/1.3 "Barlow Condensed", sans-serif; white-space: nowrap; }
 .panel.off .rules strong { color: var(--muted); }
 .next { margin-top: 16px; display: flex; gap: 12px; align-items: flex-start; }
@@ -105,6 +107,8 @@ main { width: min(1280px, calc(100% - 32px)); margin: 0 auto; padding: 22px 0 48
   .chips { margin-left: 0; }
   .panel { padding: 20px 18px; }
   .rules strong { font-size: 19px; }
+  .rules { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .rules div:nth-child(4n + 1) { grid-column: 1 / -1; }
   .events li { grid-template-columns: 76px 24px 1fr; gap: 10px; }
   .events .who { display: none; }
   .chart-wrap { padding: 14px 10px 6px; }
